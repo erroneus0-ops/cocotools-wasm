@@ -88,25 +88,19 @@ def _instab_lookup(as_, cl, sym):
     """
     Search the instruction table for `sym` (case-insensitive).
     Returns (opnum, InstaEntry) if found, else (-1, None).
-
-    Filters out entries not applicable under current pragmas, mirroring
-    the for-loop in pass1.c.
-
-    Uses INSTAB from instab.py.  When full instab translation is complete
-    this will use the faithful array form; for now it uses the dict form.
+    Mirrors the for-loop in pass1.c including pragma filters.
     """
-    from .instab import INSTAB   # deferred import
+    from .instab import INSTAB_BY_NAME   # O(1) dict lookup
 
     upper = sym.upper()
-    entry = INSTAB.get(upper)
-    if entry is None:
+    ie = INSTAB_BY_NAME.get(upper)
+    if ie is None:
         return -1, None
 
-    # Derive flags from the dict entry (stubs until full instab translation)
-    flags = entry.get('flags', lwasm_insn_normal)
+    flags = ie.flags
 
     # Apply pragma-based filters (matches the for-loop body in pass1.c)
-    if (flags & lwasm_insn_is6800) and not curpragma(cl, PRAGMA_6800COMPAT):
+    if (flags & lwasm_insn_is6800)     and not curpragma(cl, PRAGMA_6800COMPAT):
         return -1, None
     if (flags & lwasm_insn_is6809conv) and not curpragma(cl, PRAGMA_6809CONV):
         return -1, None
@@ -114,18 +108,10 @@ def _instab_lookup(as_, cl, sym):
         return -1, None
     if (flags & lwasm_insn_is6309conv) and not curpragma(cl, PRAGMA_6309CONV):
         return -1, None
-    if (flags & lwasm_insn_isemuext) and not curpragma(cl, PRAGMA_EMUEXT):
+    if (flags & lwasm_insn_isemuext)   and not curpragma(cl, PRAGMA_EMUEXT):
         return -1, None
 
-    parse_fn   = entry.get('parse_fn')    # None until fully translated
-    resolve_fn = entry.get('resolve_fn')
-    emit_fn    = entry.get('emit_fn')
-
-    # Synthetic opnum: use the index in list(INSTAB) for compatibility
-    opnum = list(INSTAB.keys()).index(upper) if upper in INSTAB else 0
-
-    ie = InstaEntry(upper, flags, parse_fn, resolve_fn, emit_fn)
-    return opnum, ie
+    return ie.opnum, ie
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -481,16 +467,14 @@ def do_pass1(as_):
         # Symbol registration (skipped during skipcond or inside macro)
         if not as_.skipcond and not as_.inmacro:
             if cl.sym and not cl.symset:
-                opnum2, ie2 = (-1, None)
+                ie2 = None
                 if cl.insn >= 0:
-                    # re-fetch the entry (opnum was set above)
                     from .instab import INSTAB
-                    keys = list(INSTAB.keys())
-                    if cl.insn < len(keys):
-                        ie2 = INSTAB.get(keys[cl.insn])
+                    if cl.insn < len(INSTAB):
+                        ie2 = INSTAB[cl.insn]
 
                 use_daddr = (ie2 is not None and
-                             ie2.get('flags', 0) & lwasm_insn_setdata)
+                             ie2.flags & lwasm_insn_setdata)
                 val = cl.daddr if use_daddr else \
                       (cl.phase if cl.phase else cl.addr)
                 as_.register_symbol(cl, cl.sym, val, symbol_flag_none)

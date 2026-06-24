@@ -130,8 +130,8 @@ class Ptr:
         self.pos = pos
 
     def peek(self):
-        """Return current character (NUL if past end)."""
-        return self.s[self.pos] if self.pos < len(self.s) else '\0'
+        """Return current character (empty string if past end — falsy like C '\0')."""
+        return self.s[self.pos] if self.pos < len(self.s) else ''
 
     def advance(self, n=1):
         """(*p) += n"""
