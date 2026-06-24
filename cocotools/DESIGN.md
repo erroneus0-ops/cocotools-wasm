@@ -1,261 +1,360 @@
-# cocotools/lwasm.py — Design Document
-# Python faithful translation of lwasm (LWTools assembler)
-# Source: http://lwtools.projects.l-w.ca/ (GPL v3, William Astle)
-# Target: byte-perfect output compatible with lwasm for 6809/6309 programs
-#
-# ================================================================
-# ARCHITECTURE OVERVIEW
-# ================================================================
-#
-# lwasm is a multi-pass assembler. The C source uses 6 passes:
-#
-#   Pass 1 (pass1.c): Read and tokenize all source lines.
-#                     Parse operands. Build initial symbol table.
-#                     Calculate instruction lengths where possible.
-#
-#   Pass 2 (pass2.c): Resolve forward references where possible.
-#
-#   Pass 3 (pass3.c): Force resolution of remaining symbols.
-#
-#   Pass 4 (pass4.c): Re-resolve after forcing.
-#
-#   Pass 5 (pass5.c): Final length calculation.
-#
-#   Pass 6 (pass6.c): Emit bytes to output.
-#
-# For simple programs (no complex forward references, no macros,
-# no object file linking), a 2-pass approach suffices:
-#
-#   Pass 1: Build symbol table, calculate instruction sizes.
-#   Pass 2: Emit bytes with resolved symbols.
-#
-# The Python translation will implement the full 6-pass model
-# to ensure compatibility with all valid lwasm source files.
-#
-# ================================================================
-# INSTRUCTION TABLE STRUCTURE (from instab.c/instab.h)
-# ================================================================
-#
-# Each instruction entry has:
-#   name    -- mnemonic string (e.g. "LDA", "JSR")
-#   ops[4]  -- opcode for each addressing mode:
-#              ops[0] = direct page (or only opcode for inherent)
-#              ops[1] = indexed
-#              ops[2] = extended
-#              ops[3] = immediate (for instructions that support it)
-#   parse   -- function to parse the operand
-#   resolve -- function to resolve forward references
-#   emit    -- function to emit bytes
-#
-# ops[] values use a special encoding:
-#   -1      = mode not supported
-#   0xXX    = 1-byte opcode (e.g. 0x96 for LDA direct)
-#   0x10XX  = 2-byte opcode with 0x10 prefix (e.g. LDS)
-#   0x11XX  = 2-byte opcode with 0x11 prefix (e.g. CMPU)
-#
-# In Python we represent ops as:
-#   None    = mode not supported
-#   int     = opcode value (may be 16-bit for prefixed opcodes)
-#
-# ================================================================
-# ADDRESSING MODE DETECTION (from insn_gen.c)
-# ================================================================
-#
-# For general instructions (LDA, STA, etc.):
-#
-#   '<' prefix  -> forced direct page (lint2 = 0)
-#   '>' prefix  -> forced extended    (lint2 = 2)
-#   '[' prefix  -> indexed indirect   (lint2 = 1)
-#   ',' in operand -> indexed         (lint2 = 1)
-#   '#' prefix  -> immediate          (lint2 = 3)
-#   otherwise   -> auto: direct if addr high byte == DP reg,
-#                        extended otherwise
-#
-# lint2 values: 0=direct, 1=indexed, 2=extended, 3=immediate
-#
-# ================================================================
-# INDEXED ADDRESSING (from insn_indexed.c)
-# ================================================================
-#
-# The most complex part. The indexed postbyte encodes:
-#   - Base register (X, Y, U, S, PC)
-#   - Offset type (none, 5-bit, 8-bit, 16-bit, PCR)
-#   - Indirect flag (bit 4)
-#   - Auto-increment/decrement
-#
-# Postbyte encoding (key cases for the book):
-#
-#   ,R          -> 0x84 | (R<<5)              no offset
-#   n,R (5-bit) -> (n&0x1F) | (R<<5)         5-bit signed offset
-#   n,R (8-bit) -> 0x88 | (R<<5), n          8-bit signed offset
-#   n,R (16-bit)-> 0x89 | (R<<5), n_hi, n_lo 16-bit offset
-#   ,R+         -> 0x80 | (R<<5)              post-increment by 1
-#   ,R++        -> 0x81 | (R<<5)              post-increment by 2
-#   ,-R         -> 0x82 | (R<<5)              pre-decrement by 1
-#   ,--R        -> 0x83 | (R<<5)              pre-decrement by 2
-#   n,PC (8-bit)-> 0x8C, n                   PC-relative 8-bit
-#   n,PC (16-bit)-> 0x8D, n_hi, n_lo         PC-relative 16-bit
-#   n,PCR       -> same as n,PC (lwasm treats PCR == PC)
-#
-#   Indirect variants: OR postbyte with 0x10
-#   [,R]        -> 0x94 | (R<<5)
-#   [n,R]       -> 0x98|0x99 | (R<<5) etc.
-#
-# Register encoding for indexed base:
-#   X=0, Y=1, U=2, S=3, PC=4 (but encoding differs -- see below)
-#
-# Actual register bits in postbyte bits [6:5]:
-#   X: 00 (0)
-#   Y: 01 (1)  -- note: NOT the register number
-#   U: 10 (2)
-#   S: 11 (3)
-#   PC: special cases (0x8C/0x8D)
-#
-# ================================================================
-# OPCODE TABLE STRUCTURE (Python representation)
-# ================================================================
-#
-# We represent the instruction table as a dict:
-#
-#   INSTAB = {
-#     'LDA': {
-#       'imm':  0x86,   # immediate
-#       'dir':  0x96,   # direct page
-#       'idx':  0xA6,   # indexed
-#       'ext':  0xB6,   # extended
-#       'parse': 'gen8',  # parser class
-#     },
-#     'JSR': {
-#       'imm':  None,
-#       'dir':  0x9D,
-#       'idx':  0xAD,
-#       'ext':  0xBD,
-#       'parse': 'gen0',
-#     },
-#     ...
-#   }
-#
-# Parser classes:
-#   'inh'    -- inherent (no operand)
-#   'gen8'   -- general, 8-bit immediate
-#   'gen16'  -- general, 16-bit immediate
-#   'gen0'   -- general, no immediate mode
-#   'rel8'   -- 8-bit relative branch
-#   'rel16'  -- 16-bit relative branch (LBRA etc)
-#   'relgen' -- auto-size relative branch
-#   'rtor'   -- register-to-register (TFR, EXG)
-#   'rlist'  -- register list (PSHS, PULS, PSHU, PULU)
-#   'imm8'   -- immediate-only (ANDCC, ORCC, CWAI)
-#
-# ================================================================
-# TWO-PASS ALGORITHM (Python implementation)
-# ================================================================
-#
-# Pass 1:
-#   for each source line:
-#     parse label -> add to symbol table with value = current_addr
-#     parse mnemonic -> look up in INSTAB
-#     parse operand -> determine addressing mode
-#     estimate instruction size -> advance current_addr
-#     if size unknown (forward reference in branch) -> mark for pass 2
-#
-# Pass 2:
-#   for each source line:
-#     with symbol table complete, resolve all expressions
-#     determine final addressing mode (direct vs extended for ambiguous)
-#     emit bytes to output buffer
-#
-# ================================================================
-# OUTPUT FORMATS
-# ================================================================
-#
-# DECB (--format=decb):
-#   Preamble per segment: 0x00, len_hi, len_lo, addr_hi, addr_lo
-#   Code bytes follow
-#   Postamble: 0xFF, 0x00, 0x00, exec_hi, exec_lo
-#
-# OS-9 module (--format=os9):
-#   Module header generated from MOD/EMOD directives
-#   CRC-24 calculated and appended by EMOD
-#
-# Raw (--format=raw):
-#   Just the bytes, no headers
-#
-# ================================================================
-# DIRECTIVES (pseudo-ops)
-# ================================================================
-#
-# ORG expr      -- set current address
-# EQU expr      -- define symbol = expr (no code generated)
-# SET expr      -- like EQU but can be redefined
-# FCB expr,...  -- form constant byte(s)
-# FDB expr,...  -- form constant word(s) (16-bit big-endian)
-# FCC "string"  -- form constant characters (no null terminator)
-# FCS "string"  -- form constant characters with high bit set on last
-# FCN "string"  -- form constant characters with null terminator
-# RMB expr      -- reserve memory bytes (no initialization)
-# END expr      -- end of source, optional exec address
-# INCLUDE file  -- include another source file
-# MACRO/ENDM    -- macro definition (implement later)
-# IF/ELSE/ENDIF -- conditional assembly (implement later)
-# MOD/EMOD      -- OS-9 module header/footer
-# OS9 syscall   -- OS-9 system call (SWI2 + syscall byte)
-#
-# ================================================================
-# IMPLEMENTATION PLAN
-# ================================================================
-#
-# Phase 1 -- Core assembler for book programs:
-#   [ ] Instruction table (all 6809 instructions, no 6309)
-#   [ ] Tokenizer/parser
-#   [ ] Symbol table
-#   [ ] Pass 1 and Pass 2
-#   [ ] Addressing mode detection
-#   [ ] Indexed postbyte encoding (including PCR)
-#   [ ] Branch instruction encoding (rel8/rel16)
-#   [ ] Directives: ORG, EQU, FCB, FDB, FCC, FCS, RMB, END
-#   [ ] Output: DECB format
-#   [ ] Output: raw binary
-#   [ ] Verification: byte-for-byte match against lwasm output
-#
-# Phase 2 -- OS-9 support:
-#   [ ] MOD/EMOD directives
-#   [ ] CRC-24 calculation
-#   [ ] OS9 syscall directive
-#   [ ] Output: OS-9 module format
-#   [ ] RMB in data section (separate from code section)
-#
-# Phase 3 -- Extended features:
-#   [ ] MACRO/ENDM
-#   [ ] IF/ELSE/ENDIF
-#   [ ] INCLUDE
-#   [ ] 6309 instructions
-#   [ ] Object file format + lwlink equivalent
-#
-# ================================================================
-# VERIFICATION STRATEGY
-# ================================================================
-#
-# For each book program:
-#   1. Assemble with lwasm -> reference binary
-#   2. Assemble with Python lwasm -> test binary
-#   3. Compare byte-for-byte -> must match exactly
-#
-# Start with GUESS.ASM (30 bytes, simple program)
-# Then HELLO.ASM (80 bytes, more complex)
-# Then SuperComm/dir (real-world programs)
-#
-# ================================================================
-# FILES IN cocotools PACKAGE
-# ================================================================
-#
-#   cocotools/
-#     __init__.py
-#     lwasm.py        -- assembler (this design)
-#     decb.py         -- DSK builder (already written, needs cleanup)
-#     basic.py        -- BASIC tokenizer
-#     crc.py          -- CRC-24 for OS-9 modules
-#   cocotools.py      -- CLI entry point
-#     usage: python cocotools.py assemble GUESS.ASM -o GUESS.BIN
-#            python cocotools.py makedsk GUESS.DSK GUESS.BIN GUESS.BAS
-#            python cocotools.py tokenize GUESS.BAS
+# cocotools — Design Document
+
+## Project Goal
+
+A faithful Python translation of lwasm (LWTools 4.24, William Astle, GPL v3).
+
+**Faithful translation** means the same data structures, the same six-pass
+algorithm, the same resolution logic.  The output is correct by construction
+because the logic is the same, not because it was tuned to match test cases.
+
+This mirrors the philosophy of the disassembler project: byte-perfect
+reassembly is the baseline, not the end goal.  For lwasm, the baseline is
+that every valid lwasm source file produces identical output from the Python
+translation.  Edge cases are handled correctly because the code follows the
+same path, not because they were anticipated.
+
+A reimplementation that passes known test cases is not a translation.  The
+disassembler learned this lesson when it encountered opcodes not yet handled
+— the right answer is completeness by architecture, not by test coverage.
+
+Source references:
+  lwasm C source:  http://lwtools.projects.l-w.ca/hg/index.cgi/file/tip/lwasm/
+  LWTools mirrors: https://github.com/stahta01/LWTools
+                   https://github.com/jmatzen/LWTools
+
+
+---
+
+## Scope
+
+cocotools provides:
+
+  lwasm.py    Python translation of lwasm — 6809/6309 assembler
+  lw_expr.py  Python translation of lwlib/lw_expr.c — expression trees
+  decb.py     DSK and BIN format handler (not part of lwasm; replaces toolshed)
+  basic.py    BASIC tokenizer (not started)
+  crc.py      CRC-24 for OS-9 modules (not started)
+  cocotools.py  CLI entry point
+
+The scope of the lwasm translation is the DECB and OS-9 output targets.
+Object file linking (lwlink) is out of scope for now.
+
+
+---
+
+## Layer Order (dependency stack)
+
+Each layer depends on the one below it.
+
+    instab.py         Instruction table (translation of instab.c / instab.h)
+    lw_expr.py        Expression trees   (translation of lwlib/lw_expr.c)
+    lwasm.py          Assembler          (translation of pass1..6, insn_*.c,
+                                          pseudo.c, output.c, symbol.c)
+
+instab.py is complete.  lw_expr.py is complete.  lwasm.py is the next layer.
+
+
+---
+
+## lw_expr.py — Expression Tree System (DONE)
+
+Translation of lwlib/lw_expr.c (1442 lines C → 844 lines Python).
+
+Expr nodes have four types (matching lw_expr_type_* enum):
+  TYPE_INT      resolved integer value
+  TYPE_VAR      symbol name, resolved by evaluate_var callback
+  TYPE_OPER     operator node with operand list
+  TYPE_SPECIAL  assembler-defined reference (line address, symbol entry, etc.)
+
+ExprContext holds the callbacks that were static globals in the C code:
+  evaluate_special(type_code, ptr) → Expr | None
+  evaluate_var(name) → Expr | None
+  parse_term(Ptr, ctx) → Expr | None   (set by lwasm to lwasm_parse_term)
+  divzero()
+  expr_width (0=16-bit, 8=8-bit, affects complement operations)
+
+Key behaviours preserved from C:
+  In-place simplification: Expr._become(other) mirrors *E = *te
+  goto again pattern: recursive _simplify_go call after SPECIAL/VAR resolves
+  Level/bailing anti-recursion (depth limit 500, matching C)
+  Pratt-style parser matching lw_expr_parse / lw_expr_parse_compact
+  Like-term collection in PLUS nodes
+  Distribution: int * (a + b) → int*a + int*b
+
+Ptr class simulates C char** for parser input advancement.
+
+
+---
+
+## lwasm.py — Six-Pass Assembler (IN PROGRESS)
+
+Translation of the following C files, in dependency order:
+
+  lwasm.h          Data structures: line_t, asmstate_t, symtabe
+  symbol.c         Symbol table (binary tree, context-scoped)
+  input.c          Source file reading and include handling
+  lwasm.c          Core helpers: lwasm_emit, lwasm_emitexpr,
+                   lwasm_evaluate_var, lwasm_evaluate_special,
+                   lwasm_parse_term, lwasm_reduce_expr
+  pass1.c          First pass: tokenise, parse, build line list
+  pass2.c          Simplify all expressions; flag undefined symbols
+  pass3.c          Resolve1: iterate resolve callbacks until stable
+  pass4.c          Resolve2: force resolution of remaining unknowns
+  pass5.c          AssignAddresses: resolve all line addresses
+  pass6.c          Finalise: final expression reduction before emit
+  insn_gen.c       General addressing mode parse/resolve/emit
+  insn_indexed.c   Indexed postbyte encoding
+  insn_rel.c       Relative branch instructions
+  insn_inh.c       Inherent instructions
+  insn_rlist.c     Register list (PSHS/PULS/PSHU/PULU)
+  insn_rtor.c      Register-to-register (TFR/EXG)
+  insn_logicmem.c  Logic-memory instructions (AIM/OIM/EIM/TIM, 6309)
+  insn_bitbit.c    Bit manipulation (6309)
+  insn_tfm.c       Transfer-memory (6309)
+  pseudo.c         All directives (ORG, EQU, FCB, FDB, FCC, MACRO, IF, ...)
+  output.c         Output formatters (DECB, OS-9, raw, SREC, ihex)
+  macro.c          Macro expansion
+  section.c        Section management (for object file output)
+  list.c           Listing file generation
+
+
+### Key Data Structures
+
+**Line (line_t)**
+  addr     Expr   assembly address — expression tree, not integer
+  daddr    Expr   data address (OS-9 only)
+  phase    Expr   PHASE override
+  len      int    instruction size in bytes; -1 = unknown
+  dlen     int    data size; -1 = unknown
+  minlen   int    minimum possible size
+  maxlen   int    maximum possible size
+  insn     int    index into instab; -1 = not an instruction
+  sym      str    label on this line (or None)
+  output   bytes  emitted bytes (filled in pass 6 emit callback)
+  exprs    dict   {id: Expr} — named expressions saved during parse
+  dpval    int    direct page value at this line
+  genmode  int    generation mode (8 or 16 bit immediate)
+  prev/next        linked list pointers
+
+**AsmState (asmstate_t)**
+  output_format   OUTPUT_DECB | OUTPUT_OS9 | OUTPUT_RAW | ...
+  pragmas         bitmask of active pragmas (PRAGMA_6809, PRAGMA_AUTOBRANCHLENGTH, ...)
+  passno          current pass number (0=pass1, 1=pass2, ..., 5=pass6)
+  pretendmax      bool: use maxlen instead of len for address calc
+  badsymerr       bool: error on undefined symbol (set in pass2)
+  line_head       first Line in linked list
+  line_tail       last Line
+  cl              current Line being processed
+  symtab          symbol table root
+  execaddr        integer exec address from END directive
+  execaddr_expr   Expr form of same
+  endseen         bool: END directive has been seen
+  inmod           bool: inside OS-9 MOD/EMOD block
+  crc             3-byte CRC accumulator (OS-9)
+
+**SymTabEntry (symtabe)**
+  symbol    str     symbol name
+  context   int     local context (-1 = global)
+  version   int     for SET (allows redefinition)
+  flags     int     symbol_flag_set | symbol_flag_nocase | ...
+  value     Expr    the symbol's value — an expression tree
+
+Note: symbol values are Expr trees, not integers.  A label's value is the
+address expression of its line, which starts as an Expr tree and simplifies
+to an integer once all preceding line sizes are known.
+
+
+### Six-Pass Structure
+
+**Pass 1 (pass1.c) — do_pass1(as)**
+  Read source line by line.  For each line:
+    Allocate a Line node and append to the linked list
+    Set line.addr = prev.addr + Expr.special(LINELEN, prev)
+      (This is an expression tree: addr is unknown until prev.len is known)
+    Call lwasm_parse_term to identify mnemonic
+    Look up mnemonic in instab -> set line.insn
+    Call instab[insn].parse(as, line, operand_ptr)
+      parse() stores the parsed operand as saved expressions on the line
+      parse() sets line.len = -1 (unknown) or a fixed value if immediately known
+    Register line.sym in the symbol table with value = line.addr expression
+    Call lwasm_reduce_line_exprs() to attempt early simplification
+
+**Pass 2 (pass2.c) — do_pass2(as)**
+  Set as.badsymerr = 1 (now errors on undefined symbols)
+  For each line: call lwasm_reduce_expr() on addr, daddr, all saved exprs
+  Verify export list (OBJ target only)
+
+**Pass 3 (pass3.c) — do_pass3(as)**
+  Repeat until no sizes change:
+    For each line: reduce all expressions
+    If line.len == -1 and has resolve callback:
+      call instab[insn].resolve(as, line, force=0)
+      If resolve() set line.len: increment resolved count
+  Stop when resolved count reaches zero (nothing new to resolve)
+
+**Pass 4 (pass4.c) — do_pass4(as)**
+  For each still-unresolved line:
+    call instab[insn].resolve(as, line, force=1)
+    resolve() MUST produce a size (use worst-case if uncertain)
+    Error if still len == -1 after force
+
+**Pass 5 (pass5.c) — do_pass5(as)**
+  Force resolution of all line address expressions
+  All sizes now known, so all addr Exprs should collapse to integers
+
+**Pass 6 (pass6.c) — do_pass6(as)**
+  Final expression reduction on all saved exprs
+  Call instab[insn].emit(as, line) for each line to produce output bytes
+
+
+### Instruction Callback Pattern
+
+Each instab entry has three callbacks (function pointers in C, callables in Python):
+
+  parse(as, line, p)       Called in Pass 1.
+                           Reads operand from Ptr p.
+                           Saves parsed Exprs to line with lwasm_save_expr().
+                           Sets line.len = -1 (deferred) or known size.
+                           Sets line.minlen and line.maxlen.
+
+  resolve(as, line, force) Called in Passes 3 and 4.
+                           With force=0: try to determine line.len; ok to skip.
+                           With force=1: must set line.len (use maxlen if needed).
+                           Uses lwasm_fetch_expr() to retrieve parsed Exprs.
+
+  emit(as, line)           Called in Pass 6.
+                           Uses lwasm_fetch_expr() to retrieve final Exprs.
+                           Calls lwasm_emit(line, byte) for each output byte.
+
+The separation of parse/resolve/emit (rather than a single function) is what
+makes the multi-pass architecture work correctly.  An instruction only knows
+its size in resolve(), not in parse().
+
+
+### pretendmax and Address Calculation
+
+Line addresses are expression trees:
+
+  line[n].addr = line[n-1].addr + Expr.special(LINELEN, line[n-1])
+
+LINELEN is a special node that evaluates via evaluate_special():
+  if line.len >= 0:   return Expr.int(line.len)
+  if pretendmax:      return Expr.int(line.maxlen)  [worst-case estimate]
+  otherwise:          return None                    [still unknown]
+
+When pretendmax=True, all addresses can be calculated conservatively, allowing
+pass 4 to force-resolve instructions even when some preceding sizes are still
+being determined.
+
+
+### Pragma Notes
+
+Key pragmas affecting 6809 book programs:
+
+  PRAGMA_6809              6809 mode (default); disables 6309 instructions
+  PRAGMA_AUTOBRANCHLENGTH  auto-promote short branches to long if needed
+  PRAGMA_FORWARDREFMAX     force worst-case size for all forward refs in pass 1
+  PRAGMA_PCASPCR           treat ,PC as ,PCR (not fixed offset)
+
+
+---
+
+## instab.py — Instruction Table (DONE)
+
+Translation of instab.c (836 lines C).
+
+Python dict INSTAB: mnemonic → {mode: opcode, 'parse': class_string}
+
+Mode keys: 'imm', 'dir', 'idx', 'ext', 'inh', 'rel'
+  None = mode not supported
+  int  = opcode (>= 0x1000 means prefixed: 0x10__ or 0x11__)
+
+Parse classes: inh, gen8, gen16, gen0, rel8, rel16, relgen,
+               rtor, rlist, imm8, leax, mem
+
+139 instructions verified against the C table.
+
+
+---
+
+## Indexed Addressing (insn_indexed.c)
+
+The most complex part of the assembler — 834 lines of C.
+
+Postbyte encoding:
+  ,R           → 0x84|(R<<5)           zero offset
+  n,R (5-bit)  → (n&0x1F)|(R<<5)      5-bit signed, no indirect
+  n,R (8-bit)  → 0x88|(R<<5), n       8-bit signed
+  n,R (16-bit) → 0x89|(R<<5), hi, lo  16-bit
+  ,R+          → 0x80|(R<<5)          post-inc by 1
+  ,R++         → 0x81|(R<<5)          post-inc by 2
+  ,-R          → 0x82|(R<<5)          pre-dec by 1
+  ,--R         → 0x83|(R<<5)          pre-dec by 2
+  A,R          → 0x86|(R<<5)          accumulator A offset
+  B,R          → 0x85|(R<<5)          accumulator B offset
+  D,R          → 0x8B|(R<<5)          accumulator D offset
+  n,PC (8)     → 0x8C, n             PC-relative 8-bit
+  n,PC (16)    → 0x8D, hi, lo        PC-relative 16-bit
+  n,PCR        → same as n,PC (lwasm treats PCR == PC for 6809)
+  [addr]       → 0x9F, hi, lo        extended indirect
+
+Indirect bit: OR postbyte with 0x10 (except 5-bit which has no indirect form)
+
+Register bits in postbyte [6:5]: X=00, Y=01, U=10, S=11
+
+
+---
+
+## Output Formats
+
+DECB (Color BASIC LOADM format):
+  Per segment: 0x00, len_hi, len_lo, load_hi, load_lo, <bytes>
+  Postamble:   0xFF, 0x00, 0x00, exec_hi, exec_lo
+
+OS-9 module format:
+  Module header from MOD directive
+  CRC-24 appended by EMOD
+
+Raw: bytes only, no headers
+SREC / IHEX: Motorola S-record / Intel hex (output.c)
+
+
+---
+
+## Verification Strategy
+
+The baseline test for any correct assembler is byte-for-byte agreement with
+the reference tool on every valid input it can process.
+
+For the lwasm translation, verification is:
+  1. Assemble with real lwasm (compiled from source) → reference binary
+  2. Assemble with Python translation → test binary
+  3. Diff byte-for-byte → must match exactly
+
+Current verified programs:
+  GUESS.ASM (30 bytes)    PASS — byte-perfect vs lwasm 4.24
+  HELLO.ASM (78 bytes)    PASS — byte-perfect vs lwasm 4.24
+
+These were verified against the stub lwasm.py (a reimplementation, not a
+translation).  As the proper translation is built, each program will be
+reverified against it.  The stub will be retired once the translation covers
+the same feature set.
+
+
+---
+
+## Implementation Status
+
+  lw_expr.py      DONE   841 lines — full translation of lwlib/lw_expr.c
+  instab.py       DONE   259 lines — instruction table, 139 instructions
+  lwasm.py        STUB   Current file is a reimplementation, not a translation.
+                         Produces correct output for GUESS.ASM and HELLO.ASM.
+                         Does NOT implement the six-pass architecture.
+                         Will be replaced by the proper translation.
+  decb.py         DONE   Not part of lwasm; replaces toolshed decb/dskini.
+  basic.py        TODO
+  crc.py          TODO
+
+**Next step: lwasm.py — start with lwasm.h data structures (Line, AsmState,
+SymTabEntry), then symbol.c, then lwasm.c helpers, then pass1.c.**
