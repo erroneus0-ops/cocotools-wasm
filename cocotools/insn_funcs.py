@@ -182,10 +182,10 @@ def _insn_parse_gen_aux(as_, cl, p, elen=0):
     # ',' or '[' → definitely indexed
     if p.peek() in (',', '['):
         _parse_indexed_mode(as_, cl, p)
-        cl.lint  = cl.pb if hasattr(cl, 'pb') else -1
         cl.lint2 = 1
         cl.minlen = _oplen(ops[1]) + 1 + elen
         cl.maxlen = _oplen(ops[1]) + 3 + elen
+        _set_len_from_lint2(cl, ops, elen)
         return
 
     # Force size prefix
@@ -225,6 +225,7 @@ def _insn_parse_gen_aux(as_, cl, p, elen=0):
         cl.lint2 = 1
         cl.minlen = _oplen(ops[1]) + 1 + elen
         cl.maxlen = _oplen(ops[1]) + 3 + elen
+        _set_len_from_lint2(cl, ops, elen)
         return
 
     if not s:
@@ -500,7 +501,7 @@ def _parse_indexed_mode(as_, cl, p):
             p.advance()
             reg_bits = _get_idx_reg_bits(cl, as_, p)
             if reg_bits is not None:
-                acc_map = {'A': 0x06, 'B': 0x05, 'D': 0x0B}
+                acc_map = {'A': 0x86, 'B': 0x85, 'D': 0x8B}
                 pb = reg_bits | acc_map[acc_char]
                 if indirect: pb |= 0x10
                 cl.pb   = pb
@@ -519,7 +520,7 @@ def _parse_indexed_mode(as_, cl, p):
                 p.advance()
                 reg_bits = _get_idx_reg_bits(cl, as_, p)
                 if reg_bits is None: return
-                pb = reg_bits | 0x03   # pre-decrement 2
+                pb = reg_bits | 0x83   # ,--R pre-decrement 2
                 if indirect: pb |= 0x10
                 cl.pb   = pb
                 cl.lint = 0
@@ -528,7 +529,7 @@ def _parse_indexed_mode(as_, cl, p):
             else:
                 reg_bits = _get_idx_reg_bits(cl, as_, p)
                 if reg_bits is None: return
-                pb = reg_bits | 0x02   # pre-decrement 1
+                pb = reg_bits | 0x82   # ,-R  pre-decrement 1
                 if indirect: pb |= 0x10
                 cl.pb   = pb
                 cl.lint = 0
@@ -542,11 +543,11 @@ def _parse_indexed_mode(as_, cl, p):
             p.advance()
             if p.peek() == '+':
                 p.advance()
-                pb = reg_bits | 0x01   # post-increment 2
+                pb = reg_bits | 0x81   # ,R++ post-increment 2
             else:
-                pb = reg_bits | 0x00   # post-increment 1
+                pb = reg_bits | 0x80   # ,R+  post-increment 1
         else:
-            pb = reg_bits | 0x04       # zero-offset
+            pb = reg_bits | 0x84       # ,R   zero-offset
         if indirect: pb |= 0x10
         cl.pb   = pb
         cl.lint = 0
@@ -559,6 +560,13 @@ def _parse_indexed_mode(as_, cl, p):
         as_.register_error(cl, E_OPERAND_BAD); return
     cl.save_expr(0, expr)
 
+    # [expr] with no register = extended indirect (post-byte 0x9F)
+    if indirect and p.peek() == ']':
+        p.advance()
+        cl.pb   = 0x9F
+        cl.lint = 2   # 16-bit address
+        return
+
     if p.peek() != ',':
         as_.register_error(cl, E_OPERAND_BAD); return
     p.advance()
@@ -567,12 +575,18 @@ def _parse_indexed_mode(as_, cl, p):
     if p.peek() and p.s[p.pos:p.pos+2].upper() == 'PC':
         p.advance(2)
         if p.peek() and p.peek().upper() == 'R': p.advance()
-        # PC-relative: the offset is target - (here + instruction_length)
-        # We'll handle this as 16-bit for now (most reliable)
+        # PC-relative offset = target - (addr + linelen), same as relgen
         pb = 0x8D  # 16-bit PC-relative
         if indirect: pb |= 0x10
         cl.pb   = pb
         cl.lint = 2   # 16-bit offset
+
+        # Build offset expression: expr - LINELEN(cl) - addr(cl)
+        le = Expr.special(lwasm_expr_linelen, cl)
+        e1 = Expr.oper(OPER_MINUS, expr, le)
+        e2 = Expr.oper(OPER_MINUS, e1, cl.addr)
+        cl.save_expr(0, e2)
+
         if indirect and p.peek() == ']': p.advance()
         return
 
@@ -584,22 +598,22 @@ def _parse_indexed_mode(as_, cl, p):
     if expr.istype(TYPE_INT):
         v = expr.intval()
         if not indirect and -16 <= v <= 15:
-            pb   = reg_bits | (v & 0x1F) & 0xFF
+            pb   = reg_bits | (v & 0x1F) & 0xFF   # 5-bit, bit7=0
             cl.pb   = pb
             cl.lint = 3   # 5-bit constant
         elif -128 <= v <= 127:
-            pb   = reg_bits | 0x08  # 8-bit
+            pb   = reg_bits | 0x88  # 8-bit offset, bit7=1
             if indirect: pb |= 0x10
             cl.pb   = pb
             cl.lint = 1
         else:
-            pb   = reg_bits | 0x09  # 16-bit
+            pb   = reg_bits | 0x89  # 16-bit offset, bit7=1
             if indirect: pb |= 0x10
             cl.pb   = pb
             cl.lint = 2
     else:
         # Forward ref: use 16-bit (conservative)
-        pb   = reg_bits | 0x09
+        pb   = reg_bits | 0x89
         if indirect: pb |= 0x10
         cl.pb   = pb
         cl.lint = 2
@@ -627,7 +641,8 @@ def _insn_resolve_indexed_aux(as_, cl, force, elen=0):
     """Resolve indexed mode: try to pick optimal offset size."""
     e = cl.fetch_expr(0)
     if not e: return
-    if cl.lint in (0, 3): return   # already determined
+    # C: if (l->lint != -1) return;  -- only resolve if still undecided
+    if cl.lint != -1: return
 
     as_.reduce_expr(e)
     if e.istype(TYPE_INT):
@@ -638,10 +653,10 @@ def _insn_resolve_indexed_aux(as_, cl, force, elen=0):
             cl.pb   = reg_base | (v & 0x1F)
             cl.lint = 3
         elif -128 <= v <= 127:
-            cl.pb   = reg_base | 0x08 | indirect
+            cl.pb   = reg_base | 0x88 | indirect
             cl.lint = 1
         else:
-            cl.pb   = reg_base | 0x09 | indirect
+            cl.pb   = reg_base | 0x89 | indirect
             cl.lint = 2
         ops = _ops(cl)
         cl.len = _oplen(ops[1]) + 1 + cl.lint + elen if cl.lint != 3 else _oplen(ops[1]) + 1 + elen

@@ -136,9 +136,9 @@ class Line:
         self.daddr  = None      # lw_expr_t — OS-9 data address
         self.phase  = None      # lw_expr_t — PHASE override
 
-        # Sizes (-1 = unknown)
-        self.len    = -1
-        self.dlen   = -1
+        # Sizes (0 = no output; -1 = unknown, set before parse call)
+        self.len    = 0
+        self.dlen   = 0
         self.minlen = 0
         self.maxlen = 0
 
@@ -992,11 +992,11 @@ class AsmState:
 
         if cl.len == -1 or cl.dlen == -1:
             if cl.insn >= 0:
-                # Look up the instruction entry and call resolve(force=0)
-                # instab entries are dicts with optional 'resolve' callable
-                entry = list(INSTAB.values())[cl.insn] if cl.insn < len(INSTAB) else None
-                # This will be called properly once instab.py is extended
-                # with resolve callbacks.  For now, the hook is in place.
+                from .instab import INSTAB
+                if cl.insn < len(INSTAB):
+                    ie = INSTAB[cl.insn]
+                    if ie.resolve:
+                        ie.resolve(self, cl, 0)
 
     # ── lwasm_register_error ─────────────────────────────────────────────────
 

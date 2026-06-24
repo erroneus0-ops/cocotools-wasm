@@ -435,20 +435,24 @@ def do_pass1(as_):
                                             cl.dlen = cl.len
 
                                     # Check for unconsumed operand
-                                    leftover = remaining.strip() \
-                                        if isinstance(remaining, str) else ''
+                                    # C: if (*p1 && !isspace(*p1) && !(cl->err))
+                                    # Only the FIRST character matters — leading
+                                    # spaces mean the parser consumed everything
+                                    # meaningful (e.g. remaining = "  ; comment")
+                                    rem = remaining if isinstance(remaining, str) else ''
                                     if not curpragma(cl, PRAGMA_NEWSOURCE):
-                                        if leftover and not cl.err:
+                                        first = rem[0] if rem else ''
+                                        if first and not first.isspace() and not cl.err:
                                             as_.register_error2(
                                                 cl, E_OPERAND_BAD,
-                                                '(%s)', leftover)
+                                                '(%s)', rem)
                                     else:
-                                        leftover = leftover.lstrip()
-                                        if leftover and leftover[0] not in \
+                                        stripped = rem.lstrip()
+                                        if stripped and stripped[0] not in \
                                                 (';', '#'):
                                             as_.register_error2(
                                                 cl, E_OPERAND_BAD,
-                                                '%s', leftover)
+                                                '%s', stripped)
 
                                     # Early expression reduction
                                     as_.reduce_line_exprs(cl)
