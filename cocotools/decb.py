@@ -131,7 +131,98 @@ def parse_bin(data):
 # BASIC tokenizer (minimal — for .BAS files, builds a runnable program)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def tokenize_basic(text, load_addr=0x1E01):
+def detoken_basic(data):
+    """
+    Detokenize a Color BASIC binary program.
+    Returns the source as a string.
+
+    Faithful translation of _decb_detoken() from
+    toolshed libdecb/libdecbtokenize.c (GPL).
+    """
+    # CoCo function tokens (0xFF prefix, then 0x80+index)
+    _FUNCTIONS = [
+        "SGN", "INT", "ABS", "USR", "RND", "SIN", "PEEK",
+        "LEN", "STR$", "VAL", "ASC", "CHR$", "EOF", "JOYSTK",
+        "LEFT$", "RIGHT$", "MID$", "POINT", "INKEY$", "MEM",
+        "ATN", "COS", "TAN", "EXP", "FIX", "LOG", "POS", "SQR",
+        "HEX$", "VARPTR", "INSTR", "TIMER", "PPOINT", "STRING$",
+        "CVN", "FREE", "LOC", "LOF", "MKN$", "AS", "", "LPEEK",
+        "BUTTON", "HPOINT", "ERNO", "ERLIN",
+    ]
+
+    # CoCo command tokens (0x80+index)
+    _COMMANDS = [
+        "FOR", "GO", "REM", "'", "ELSE", "IF",
+        "DATA", "PRINT", "ON", "INPUT", "END", "NEXT",
+        "DIM", "READ", "RUN", "RESTORE", "RETURN", "STOP",
+        "POKE", "CONT", "LIST", "CLEAR", "NEW", "CLOAD",
+        "CSAVE", "OPEN", "CLOSE", "LLIST", "SET", "RESET",
+        "CLS", "MOTOR", "SOUND", "AUDIO", "EXEC", "SKIPF",
+        "TAB(", "TO", "SUB", "THEN", "NOT", "STEP",
+        "OFF", "+", "-", "*", "/", "^",
+        "AND", "OR", ">", "=", "<", "DEL",
+        "EDIT", "TRON", "TROFF", "DEF", "LET", "LINE", "PCLS",
+        "PSET", "PRESET", "SCREEN", "PCLEAR", "COLOR", "CIRCLE",
+        "PAINT", "GET", "PUT", "DRAW", "PCOPY", "PMODE",
+        "PLAY", "DLOAD", "RENUM", "FN", "USING", "DIR",
+        "DRIVE", "FIELD", "FILES", "KILL", "LOAD", "LSET",
+        "MERGE", "RENAME", "RSET", "SAVE", "WRITE", "VERIFY",
+        "UNLOAD", "DSKINI", "BACKUP", "COPY", "DSKI$", "DSKO$",
+        "DOS", "WIDTH", "PALETTE", "HSCREEN", "LPOKE", "HCLS",
+        "HCOLOR", "HPAINT", "HCIRCLE", "HLINE", "HGET", "HPUT",
+        "HBUFF", "HPRINT", "ERR", "BRK", "LOCATE", "HSTAT",
+        "HSET", "HRESET", "HDRAW", "CMP", "RGB", "ATTR",
+    ]
+
+    buf  = data if isinstance(data, (bytes, bytearray)) else bytes(data)
+    pos  = 0
+    out  = []
+
+    # Skip optional 0xFF header + 2-byte file size
+    if buf[pos] == 0xFF:
+        pos += 3
+
+    while pos + 1 < len(buf):
+        # 2-byte next-line pointer
+        next_ptr = (buf[pos] << 8) | buf[pos+1]
+        pos += 2
+        if next_ptr == 0:
+            break   # end of program
+
+        # 2-byte line number
+        if pos + 1 >= len(buf):
+            break
+        line_no = (buf[pos] << 8) | buf[pos+1]
+        pos += 2
+        line = [str(line_no), ' ']
+
+        # Decode tokens until NUL
+        while pos < len(buf):
+            ch = buf[pos]; pos += 1
+            if ch == 0x00:
+                break
+            elif ch == 0xFF:
+                # Function token
+                if pos < len(buf):
+                    fn = buf[pos]; pos += 1
+                    idx = fn - 0x80
+                    if 0 <= idx < len(_FUNCTIONS) and _FUNCTIONS[idx]:
+                        line.append(_FUNCTIONS[idx])
+                    else:
+                        line.append('!')
+            elif ch >= 0x80:
+                # Command token
+                idx = ch - 0x80
+                if 0 <= idx < len(_COMMANDS) and _COMMANDS[idx]:
+                    line.append(_COMMANDS[idx])
+                else:
+                    line.append('!')
+            else:
+                line.append(chr(ch))
+
+        out.append(''.join(line))
+
+    return '\n'.join(out)
     """
     Tokenize CoCo Color BASIC source text into binary format.
 
