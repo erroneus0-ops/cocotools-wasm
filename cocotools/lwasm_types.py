@@ -65,6 +65,9 @@ FLAG_NOOUT          = 0x0080
 FLAG_SYMDUMP        = 0x0100
 FLAG_NONE           = 0
 
+# instab flags (subset needed outside pass1.py)
+lwasm_insn_setdata  = 1 << 5   # use daddr (not addr) for symbol
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pragma bits  (enum lwasm_pragmas_e)
