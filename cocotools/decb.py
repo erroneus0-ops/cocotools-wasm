@@ -410,6 +410,63 @@ class Dsk:
             files.append((name, ext, ftype, size))
         return files
 
+    def read_file(self, name, ext):
+        """
+        Read a file from the disk image.
+        Returns (data: bytes, ftype: int, ascii_flag: int) or raises DskError.
+
+        Faithful translation of _decb_read() from libdecb/libdecbread.c
+        (toolshed, nitros9project, GPL).
+        """
+        name8 = name.upper().ljust(8)[:8]
+        ext3  = ext.upper().ljust(3)[:3]
+        slot  = self._find_file(name8, ext3)
+        if slot is None:
+            raise DskError(f"file not found: {name}.{ext}")
+
+        off        = self._dir_entry_offset(slot)
+        ftype      = self._img[off + 11]
+        ascii_flag = self._img[off + 12]
+        first_gran = self._img[off + 13]
+        bytes_last = (self._img[off + 14] << 8) | self._img[off + 15]
+
+        # Walk FAT chain collecting granule data
+        data = bytearray()
+        g = first_gran
+        visited = set()
+
+        while True:
+            if g >= GRAN_TOTAL or g in visited:
+                raise DskError(f"corrupt FAT chain in {name}.{ext}")
+            visited.add(g)
+
+            fat_val = self._fat_byte(g)
+
+            # Read this granule (9 sectors = 2304 bytes)
+            gran_data = self._read_granule(g)
+
+            if fat_val >= 0xC0:
+                # Last granule — trim to exact size
+                # sectors_in_last = (fat_val & 0x3F) - 1  (0-indexed)
+                # bytes = sectors_in_last * 256 + bytes_last
+                sectors_used = (fat_val & 0x3F) - 1
+                if sectors_used < 0:
+                    sectors_used = 0
+                exact = sectors_used * SECSIZE + bytes_last
+                data.extend(gran_data[:exact])
+                break
+            else:
+                data.extend(gran_data)
+                g = fat_val
+
+        return bytes(data), ftype, ascii_flag
+
+    def _read_granule(self, gran):
+        """Read one complete granule (9 sectors = 2304 bytes) from the image."""
+        track, sector = gran_to_track_sector(gran)
+        offset = sector_offset(track, sector)
+        return self._img[offset:offset + GRAN_SIZE]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # High-level helpers
