@@ -596,3 +596,58 @@ def infer_ftype(ext):
     if ext in ('DAT', 'DATA'):
         return FTYPE_DATA
     return FTYPE_TEXT
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI: bin_info -- report on a DECB .BIN file
+# ─────────────────────────────────────────────────────────────────────────────
+
+def bin_info(path):
+    """
+    Parse a DECB .BIN file and print a human-readable summary.
+    Returns True on success, False on error.
+    """
+    try:
+        data = open(path, 'rb').read()
+    except OSError as e:
+        print(f"error: {e}")
+        return False
+
+    try:
+        segments, exec_addr = parse_bin(data)
+    except ValueError as e:
+        print(f"{path}: {e}")
+        print(f"  not a valid DECB binary")
+        return False
+
+    total = sum(len(code) for _, code in segments)
+    print(f"{path}")
+    print(f"  segments:  {len(segments)}")
+    for i, (load_addr, code) in enumerate(segments):
+        print(f"  [{i}] load: ${load_addr:04X}  length: {len(code)} bytes (${len(code):04X})")
+    print(f"  total:     {total} bytes (${total:04X})")
+    if exec_addr is not None:
+        # Flag if exec is outside any loaded segment
+        in_range = any(
+            load_addr <= exec_addr < load_addr + len(code)
+            for load_addr, code in segments
+        )
+        flag = "" if in_range else "  *** outside loaded data -- may be placeholder"
+        print(f"  exec:      ${exec_addr:04X}{flag}")
+    else:
+        print(f"  exec:      (none -- no postamble found)")
+    return True
+
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) < 2:
+        print("usage: python decb.py <file.bin> [file.bin ...]")
+        sys.exit(1)
+    ok = True
+    for path in sys.argv[1:]:
+        if not bin_info(path):
+            ok = False
+        if len(sys.argv) > 2:
+            print()
+    sys.exit(0 if ok else 1)
