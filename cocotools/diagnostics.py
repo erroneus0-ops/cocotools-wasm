@@ -1,14 +1,23 @@
 """
-cocotools/diagnostics.py -- 6809 hardware diagnostic warnings
+cocotools/diagnostics.py -- 6809 source diagnostic warnings
 
-Detects patterns that are syntactically valid and accepted by lwasm
-but produce undefined behavior on real 6809 hardware, or common
-programming mistakes that produce incorrect results.
+Analyzes 6809 assembly SOURCE TEXT for patterns that are syntactically
+valid and accepted by lwasm but produce undefined behavior on real 6809
+hardware, or common programming mistakes.
 
-These diagnostics go beyond what lwasm provides, catching issues that
-lwasm silently accepts. The assembler output is still produced -- these
-are warnings, not errors. The programmer is informed and can decide
-how to proceed.
+ARCHITECTURE NOTE:
+This module operates on source text BEFORE or ALONGSIDE assembly --
+NOT inside the lwasm translation layer. The lwasm translation (lwasm.py,
+insn_funcs.py, lwasm_core.py, passes.py etc.) must remain a faithful
+reproduction of lwasm behavior, bugs and all, to survive lwasm updates.
+
+Diagnostics belong here, outside the translation, as a separate analysis
+pass. The cocotools API layer calls both:
+    1. The lwasm translation (produces bytes)
+    2. The diagnostic analyzer (produces warnings)
+
+This way lwasm translation updates never touch diagnostic code and
+diagnostic improvements never risk breaking the translation.
 
 Reference: Motorola MC6809 Programming Reference Manual
            ugufru/coco CLAUDE.md (community-documented gotchas)

@@ -398,13 +398,6 @@ def encode_indexed(operand, pc, instr_end, symbols, lineno, committed_size=None)
         if base not in IDX_REGS:
             raise AsmError(f"unknown index register '{base}'", lineno)
         rb = IDX_REGS[base]
-        # ── Diagnostic: pre-decrement by 1 on S or U is undefined on real 6809
-        if base in ('S', 'U'):
-            import sys
-            print(f"  WARNING [line {lineno}] W2000: Pre-decrement by 1 on {base} "
-                  f"is undefined behavior on real 6809 hardware. "
-                  f"Use PSH{base} instead.", file=sys.stderr)
-        # ─────────────────────────────────────────────────────────────────────
         pb = 0x82 | (rb << 5)
         return bytes([pb])
 

@@ -530,13 +530,6 @@ def _parse_indexed_mode(as_, cl, p):
                 reg_bits = _get_idx_reg_bits(cl, as_, p)
                 if reg_bits is None: return
                 pb = reg_bits | 0x82   # ,-R  pre-decrement 1
-                # ── Diagnostic: ,-S and ,-U are undefined on real 6809 hardware
-                from .diagnostics import check_predec1_su
-                result = check_predec1_su(reg_bits | 0x80, getattr(cl, 'mnemonic', ''))
-                if result and hasattr(as_, 'diag'):
-                    code, kwargs = result
-                    as_.diag.warn(cl.linenum, cl.fname, code, **kwargs)
-                # ─────────────────────────────────────────────────────────────
                 if indirect: pb |= 0x10
                 cl.pb   = pb
                 cl.lint = 0
