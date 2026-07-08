@@ -479,6 +479,10 @@ class AsmState:
         # Error on undefined symbol (set in pass 2+)
         self.badsymerr = 0
 
+        # Diagnostic warnings (beyond lwasm's built-in warnings)
+        from .diagnostics import DiagnosticLog
+        self.diag = DiagnosticLog()
+
         # Pretend max size for addresses during forced resolution
         self.pretendmax = 0
 
