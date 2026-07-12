@@ -25,15 +25,16 @@ Reference: Motorola MC6809 Programming Reference Manual
 
 # ── Warning codes ──────────────────────────────────────────────────────────────
 
-W_UNDEFINED_PREDEC1_SU   = 2000   # STA/STB/STD/etc ,-S or ,-U  (undef behavior)
+W_UNDEFINED_PREDEC1_SU   = 2000   # [,-S] or [,-U] indirect pre-decrement (undef on 6809, absent on 6309)
 W_CC_CLOBBERED_BEFORE_BRANCH = 2001  # instruction sets CC then D loaded before branch
 W_SUGGEST_PSHS           = 2002   # use PSHS/PULS instead of indexed on S
 
 
 DIAGNOSTIC_MESSAGES = {
     W_UNDEFINED_PREDEC1_SU: (
-        "Pre-decrement by 1 on {reg} is undefined behavior on real 6809 hardware. "
-        "Use PSH{s}{reg} instead."
+        "Indirect pre-decrement by 1 on {reg} -- [,-{reg}] -- is undefined by Motorola. "
+        "Exists on some 6809 silicon but absent on 6309. Portability hazard. "
+        "Direct form ,-{reg} is valid."
     ),
     W_CC_CLOBBERED_BEFORE_BRANCH: (
         "Instruction '{insn}' modifies CC flags set by previous comparison. "
