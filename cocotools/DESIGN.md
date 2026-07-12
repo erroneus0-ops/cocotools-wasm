@@ -4,6 +4,13 @@
 
 A faithful Python translation of lwasm (LWTools 4.24, William Astle, GPL v3).
 
+**Upstream status (checked July 2026):**
+LWTools is actively maintained. Recent commits (June 2026) add a GCC 6809
+backend (gcc6809lw) to the ecosystem. The lwasm assembler core itself has
+not had behavioral changes since 4.24. Our translation remains current.
+If lwasm behavior changes in a future version, the translation must be
+updated to match -- not "improved" independently.
+
 **Faithful translation** means the same data structures, the same six-pass
 algorithm, the same resolution logic.  The output is correct by construction
 because the logic is the same, not because it was tuned to match test cases.
