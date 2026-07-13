@@ -956,8 +956,11 @@ def insn_parse_rlist(as_, cl, operand):
                 return p.remaining()
 
         # Map register bits
-        if rn == 8:        # PC
+        # _RLIST_REGS table: CC=0 A=1 B=2 DP=3 X=4 Y=5 U=6 PC=7 D=8 S=9
+        if rn == 7:        # PC
             rb |= 0x80
+        elif rn == 8:      # D = A|B (lwasm treats D as synonym for A,B in rlist)
+            rb |= 0x06
         elif rn == 9:      # S
             rb |= 0x40
         else:
