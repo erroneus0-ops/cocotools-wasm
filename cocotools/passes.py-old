@@ -488,53 +488,29 @@ def _collect_decb(as_):
 
 
 def _collect_raw(as_):
-    """
-    write_code_raw: sequential LINE-ORDER byte stream, matching real
-    lwasm's actual algorithm (lwasm/output.c write_code_raw) exactly.
-
-    This does NOT build an address-indexed memory image -- addresses are
-    never consulted. Real lwasm's raw format simply walks the line list
-    in order, writing real output bytes where present and zero-filling
-    RMB-style reservations (len>0, outputl<0) encountered along the way.
-    A leading run of reservations before the first ORG directive is
-    skipped entirely -- not zero-filled -- matching the documented
-    behavior in write_code_raw's own comment ("if a run of RMBs exists
-    at the start that is ended by an ORG statement, that run of RMBs
-    will not be output as a zero fill").
-
-    Multiple ORG statements are NOT specially handled here, matching real
-    lwasm: the C source's own comment warns "Multiple ORG statements will
-    produce mostly useless results" -- this is intentional upstream
-    behavior, not a gap to fix. RAW format is only well-defined for a
-    single contiguous ORG'd region; that's true of real lwasm too.
-    """
-    from .instab import INSTAB, OR
-
+    """write_code_raw: flat byte stream, gaps filled with zeros."""
     if not as_.line_head:
         return bytearray()
 
-    # Find the starting point: scan forward past any leading lines with no
-    # output. Any ORG-flagged line encountered along the way advances sl
-    # past it, so a leading run of RMBs-before-the-first-ORG is skipped
-    # entirely rather than zero-filled.
-    sl = as_.line_head
-    cl = sl
+    # Find the range of addresses
+    start = None; end = 0
+    cl = as_.line_head
     while cl:
-        if cl.outputl > 0:
-            break
-        if cl.insn >= 0 and cl.insn < len(INSTAB) and (INSTAB[cl.insn].flags & OR):
-            sl = cl
+        if cl.outputl > 0 and cl.addr.istype(TYPE_INT):
+            a = cl.addr.intval()
+            if start is None: start = a
+            end = max(end, a + cl.outputl)
         cl = cl.next
 
-    # Walk forward from sl in LINE ORDER (not address order), writing real
-    # output bytes and zero-filling RMB-style reservations as encountered.
-    buf = bytearray()
-    cl = sl
+    if start is None:
+        return bytearray()
+
+    buf = bytearray(end - start)
+    cl  = as_.line_head
     while cl:
-        if cl.len > 0 and cl.outputl < 0:
-            buf.extend(b'\x00' * cl.len)
-        elif cl.outputl > 0:
-            buf.extend(cl.output[:cl.outputl])
+        if cl.outputl > 0 and cl.addr.istype(TYPE_INT):
+            a = cl.addr.intval() - start
+            buf[a:a+cl.outputl] = cl.output[:cl.outputl]
         cl = cl.next
 
     return buf

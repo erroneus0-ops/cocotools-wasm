@@ -27,25 +27,6 @@ Key design notes (C -> Python mapping):
 """
 
 # ---------------------------------------------------------------------------
-# C-style truncating integer division
-#
-# C's "/" (and lwasm's "\" intdiv operator, which the C source defines
-# identically to "/") truncates toward zero. Python's native "//" floors
-# toward negative infinity instead, and disagrees with C whenever the two
-# operands have different signs (e.g. -7 // 2 == -4 in Python but
-# -7 / 2 == -3 in C). This helper reproduces C's behavior exactly, using
-# only integer arithmetic (no float involved, so it's exact for arbitrarily
-# large values, unlike int(a / b)).
-# ---------------------------------------------------------------------------
-
-def _c_trunc_div(a, b):
-    """Integer division truncating toward zero, matching C's '/' operator."""
-    q = abs(a) // abs(b)
-    if (a < 0) != (b < 0):
-        q = -q
-    return q
-
-# ---------------------------------------------------------------------------
 # Expression node type constants
 # (matches enum in lw_expr.h)
 # ---------------------------------------------------------------------------
@@ -609,26 +590,17 @@ class Expr:
             if vals[1] == 0:
                 if ctx.divzero: ctx.divzero()
                 return 0
-            return _c_trunc_div(vals[0], vals[1])
+            return int(vals[0] / vals[1])
         if op == OPER_MOD:
-            # C's % has the sign of the DIVIDEND (truncating remainder),
-            # not the sign of the divisor (Python's native % is floor-based
-            # and would differ whenever operands have mixed signs).
             if vals[1] == 0:
                 if ctx.divzero: ctx.divzero()
                 return 0
-            a, b = vals[0], vals[1]
-            return a - _c_trunc_div(a, b) * b
+            return vals[0] % vals[1]
         if op == OPER_INTDIV:
-            # lwasm's "\" operator is defined identically to "/" in the C
-            # source (both use C's truncating integer division) -- NOT
-            # Python's floor-based "//", which rounds toward negative
-            # infinity and disagrees with C whenever operands have
-            # different signs.
             if vals[1] == 0:
                 if ctx.divzero: ctx.divzero()
                 return 0
-            return _c_trunc_div(vals[0], vals[1])
+            return vals[0] // vals[1]
         if op == OPER_BWAND:  return vals[0] & vals[1]
         if op == OPER_BWOR:   return vals[0] | vals[1]
         if op == OPER_BWXOR:  return vals[0] ^ vals[1]
