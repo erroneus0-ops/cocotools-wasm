@@ -28,8 +28,6 @@ from .lwasm_types import (
     PRAGMA_FORWARDREFMAX, PRAGMA_OPERANDSIZE, PRAGMA_QRTS, PRAGMA_M80EXT,
     E_OPERAND_BAD, E_IMMEDIATE_INVALID, E_BYTE_OVERFLOW,
     E_EXPRESSION_NOT_RESOLVED, E_EXPRESSION_NOT_CONST, E_REGISTER_BAD,
-    E_BITNUMBER_UNRESOLVED, E_BITNUMBER_INVALID, E_IMMEDIATE_UNRESOLVED,
-    E_UNKNOWN_OPERATION,
     W_OPERAND_SIZE,
     lwasm_expr_linelen, lwasm_expr_lineaddr,
 )
@@ -989,42 +987,11 @@ def insn_emit_rlist(as_, cl):
 # Logic-mem (6309 AIM/EIM/OIM/TIM) — stub
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Logic-mem (6309 AIM/EIM/OIM/TIM)  (insn_logicmem.c)
-# ─────────────────────────────────────────────────────────────────────────────
-# Syntax: AIM #imm,<gen-mode-operand>  (also OIM/EIM/TIM)
-# The immediate value is saved in expression slot 100 (matching the C
-# source's use of that slot number as an "extra" operand outside the
-# normal 0/1/2 slots used by the general addressing-mode machinery), then
-# the remaining operand is parsed exactly like any other general-mode
-# instruction, with elen=1 to account for the extra immediate byte that
-# will be emitted alongside the addressing-mode bytes.
-
 def insn_parse_logicmem(as_, cl, operand):
-    p = Ptr(operand)
-    if p.peek() == '#':
-        p.advance()
-    s = as_.parse_expr(p)
-    if not s:
-        as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
-    cl.save_expr(100, s)
-    if p.peek() not in (',', ';'):
-        as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
-    p.advance()
-    _insn_parse_gen_aux(as_, cl, p, 1)
-    return p.remaining()
+    cl.len = 3; return operand   # stub
 
-def insn_resolve_logicmem(as_, cl, force):
-    if cl.len != -1: return
-    _insn_resolve_gen_aux(as_, cl, force, 1)
-
-def insn_emit_logicmem(as_, cl):
-    e = cl.fetch_expr(100)
-    if not (e and e.istype(TYPE_INT)):
-        as_.register_error(cl, E_IMMEDIATE_UNRESOLVED)
-        return
-    v = e.intval()
-    _insn_emit_gen_aux(as_, cl, v & 0xFF)
+def insn_resolve_logicmem(as_, cl, force): pass
+def insn_emit_logicmem(as_, cl): pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1049,220 +1016,18 @@ def insn_emit_conv(as_, cl):
 # TFM (6309) — stub
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TFM (6309 block transfer)  (insn_tfm.c)
-# ─────────────────────────────────────────────────────────────────────────────
-# Syntax: TFM r0+,r1+  /  TFM r0-,r1-  /  TFM r0+,r1  /  TFM r0,r1+
-# Only D, X, Y, U, S are valid TFM registers (indices 0-4 in _TFM_REGLIST).
-# The four legal direction combinations select one of four distinct
-# opcodes (ops[0..3]); any other combination is E_UNKNOWN_OPERATION.
-
-_TFM_REGLIST = "DXYUS   AB  00EF"   # index = register field value (0-4 legal)
-
-def _tfm_reg(p):
-    """Match one TFM register letter, return its _TFM_REGLIST index or None."""
-    c = p.peek()
-    if not c:
-        return None
-    idx = _TFM_REGLIST.find(c.upper())
-    if idx < 0:
-        return None
-    p.advance()
-    return idx
-
-def insn_parse_tfm(as_, cl, operand):
-    p = Ptr(operand)
-    ops = _ops(cl)
-    tfm = 0
-
-    r0 = _tfm_reg(p)
-    if r0 is None:
-        as_.register_error(cl, E_REGISTER_BAD); return p.remaining()
-
-    if p.peek() == '+':
-        p.advance(); tfm = 1
-    elif p.peek() == '-':
-        p.advance(); tfm = 2
-
-    if p.peek() != ',':
-        as_.register_error(cl, E_UNKNOWN_OPERATION); return p.remaining()
-    p.advance()
-
-    r1 = _tfm_reg(p)
-    if r1 is None:
-        as_.register_error(cl, E_REGISTER_BAD); return p.remaining()
-
-    if p.peek() == '+':
-        p.advance(); tfm |= 4
-    elif p.peek() == '-':
-        p.advance(); tfm |= 8
-
-    if p.peek() and not p.peek().isspace():
-        as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
-
-    # Only D, X, Y, U, S (indices 0-4) are valid TFM registers.
-    if r0 > 4 or r1 > 4:
-        bad = r1 if r0 < r1 else r0   # matches C: "if (r0 < r1) r0 = r1;" then uses reglist[r0]
-        as_.register_error2(cl, E_REGISTER_BAD, "'%c'", _TFM_REGLIST[bad])
-        # C does not return here -- it falls through into the switch below.
-
-    # tfm==5: r0+,r1+ / tfm==10: r0-,r1- / tfm==1: r0+,r1 / tfm==4: r0,r1+
-    if tfm == 5:
-        cl.lint = ops[0]
-    elif tfm == 10:
-        cl.lint = ops[1]
-    elif tfm == 1:
-        cl.lint = ops[2]
-    elif tfm == 4:
-        cl.lint = ops[3]
-    else:
-        as_.register_error(cl, E_UNKNOWN_OPERATION); return p.remaining()
-
-    cl.pb  = (r0 << 4) | r1
-    cl.len = _oplen(cl.lint) + 1
-    return p.remaining()
-
-def insn_resolve_tfm(as_, cl, force):
-    pass
-
-def insn_emit_tfm(as_, cl):
-    cl.emitop(cl.lint)
-    cl.emit(cl.pb)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Inter-register postbyte form (6309 TFR-style: ADDR/SUBR/CMPR/ANDR/ORR/
-# EORR/ADCR/SBCR and similar r0,r1 instructions)  (insn_tfm.c insn_parse_tfmrtor)
-# ─────────────────────────────────────────────────────────────────────────────
-# Any of the 16 TFR/EXG-style registers is legal here (unlike TFM itself,
-# which restricts to D/X/Y/U/S) -- matches lwasm_lookupreg2 over the full
-# register table: D,X,Y,U,S,PC,W,V,A,B,CC,DP,0,0,E,F.
-
-_TFMRTOR_REGS = "D X Y U S       A B     0 0 E F "
-
-def insn_parse_tfmrtor(as_, cl, operand):
-    p = Ptr(operand)
-    ops = _ops(cl)
-
-    r0 = AsmState.lookupreg2(_TFMRTOR_REGS, p)
-    if r0 < 0 or p.peek() != ',':
-        as_.register_error(cl, E_OPERAND_BAD)
-        r0 = r1 = 0
-    else:
-        p.advance()
-        r1 = AsmState.lookupreg2(_TFMRTOR_REGS, p)
-        if r1 < 0:
-            as_.register_error(cl, E_OPERAND_BAD)
-            r0 = r1 = 0
-
-    cl.len = _oplen(ops[0]) + 1
-    cl.pb  = (r0 << 4) | r1
-    return p.remaining()
-
-def insn_resolve_tfmrtor(as_, cl, force):
-    pass
-
-def insn_emit_tfmrtor(as_, cl):
-    ops = _ops(cl)
-    cl.emitop(ops[0])
-    cl.emit(cl.pb)
+def insn_parse_tfm(as_, cl, operand):      cl.len = 3; return operand
+def insn_resolve_tfm(as_, cl, force):      pass
+def insn_emit_tfm(as_, cl):               pass
+def insn_parse_tfmrtor(as_, cl, operand):  cl.len = 3; return operand
+def insn_resolve_tfmrtor(as_, cl, force):  pass
+def insn_emit_tfmrtor(as_, cl):           pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Bitbit (6309 BAND/BEOR/BIOR/BOR/LDBT/STBT) — stub
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Bitbit (6309 BAND/BEOR/BIOR/BOR/LDBT/STBT)  (insn_bitbit.c)
-# ─────────────────────────────────────────────────────────────────────────────
-# Syntax: BAND CC,srcbit,dstbit,<addr   (also A,/B,/CC, and the other 5
-# mnemonics in this family). Postbyte = (reg<<6)|(srcbit<<3)|dstbit; the
-# addressing byte is always a direct-page (1-byte) address, exactly like
-# the C source -- these instructions "cannot tolerate external references"
-# per the C comment, i.e. the address must resolve to a single byte offset
-# from the current direct page.
-
-def insn_parse_bitbit(as_, cl, operand):
-    p = Ptr(operand)
-    if not p.peek():
-        as_.register_error(cl, E_REGISTER_BAD); return p.remaining()
-    r_char = p.peek().upper()
-    p.advance()
-    if r_char == 'A':
-        r = 1
-    elif r_char == 'B':
-        r = 2
-    elif r_char == 'C' and p.peek() and p.peek().upper() == 'C':
-        r = 0
-        p.advance()
-    else:
-        as_.register_error(cl, E_REGISTER_BAD); return p.remaining()
-
-    if p.peek() != ',':
-        as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
-    p.advance()
-    e = as_.parse_expr(p)
-    if not e:
-        as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
-    cl.save_expr(0, e)
-
-    if p.peek() != ',':
-        as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
-    p.advance()
-    e = as_.parse_expr(p)
-    if not e:
-        as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
-    cl.save_expr(1, e)
-
-    if p.peek() != ',':
-        as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
-    p.advance()
-    if p.peek() == '<':
-        p.advance()   # ignore base-page address modifier, matches C
-    e = as_.parse_expr(p)
-    if not e:
-        as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
-    cl.save_expr(2, e)
-
-    ops = _ops(cl)
-    cl.lint = r
-    cl.len  = _oplen(ops[0]) + 2
-    return p.remaining()
-
-def insn_resolve_bitbit(as_, cl, force):
-    pass
-
-def insn_emit_bitbit(as_, cl):
-    ops = _ops(cl)
-
-    e = cl.fetch_expr(0)
-    if not (e and e.istype(TYPE_INT)):
-        as_.register_error(cl, E_BITNUMBER_UNRESOLVED)
-        return
-    v1 = e.intval()
-    if v1 < 0 or v1 > 7:
-        as_.register_error(cl, E_BITNUMBER_INVALID)
-        v1 = 0
-
-    e = cl.fetch_expr(1)
-    if not (e and e.istype(TYPE_INT)):
-        as_.register_error(cl, E_BITNUMBER_UNRESOLVED)
-        return
-    v2 = e.intval()
-    if v2 < 0 or v2 > 7:
-        as_.register_error(cl, E_BITNUMBER_INVALID)
-        v2 = 0
-
-    cl.pb = (cl.lint << 6) | (v1 << 3) | v2
-
-    e = cl.fetch_expr(2)
-    if e and e.istype(TYPE_INT):
-        vv = e.intval() & 0xFFFF
-        diff = vv - (cl.dpval << 8)
-        if diff > 0xFF or diff < 0:
-            as_.register_error(cl, E_BYTE_OVERFLOW)
-            return
-
-    cl.emitop(ops[0])
-    cl.emit(cl.pb)
-    cl.emitexpr(e, 1)
+def insn_parse_bitbit(as_, cl, operand):  cl.len = 4; return operand
+def insn_resolve_bitbit(as_, cl, force):  pass
+def insn_emit_bitbit(as_, cl):            pass
