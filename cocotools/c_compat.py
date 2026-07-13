@@ -96,6 +96,8 @@ _c_trunc_div = c_trunc_div
 class Ptr:
     """Mutable cursor over a string, standing in for C's `char **p`."""
 
+    __slots__ = ('s', 'pos')
+
     def __init__(self, s, pos=0):
         self.s   = s
         self.pos = pos

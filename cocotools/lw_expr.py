@@ -27,23 +27,19 @@ Key design notes (C -> Python mapping):
 """
 
 # ---------------------------------------------------------------------------
-# C-style truncating integer division
-#
-# C's "/" (and lwasm's "\" intdiv operator, which the C source defines
-# identically to "/") truncates toward zero. Python's native "//" floors
-# toward negative infinity instead, and disagrees with C whenever the two
-# operands have different signs (e.g. -7 // 2 == -4 in Python but
-# -7 / 2 == -3 in C). This helper reproduces C's behavior exactly, using
-# only integer arithmetic (no float involved, so it's exact for arbitrarily
-# large values, unlike int(a / b)).
+# C-style truncating integer division (DIVIDE/MOD/INTDIV all need this --
+# see cocotools/c_compat.py for why native Python // and % disagree with
+# C's / and % on mixed-sign operands, and why this needs to be a single
+# shared implementation rather than redefined per-file).
 # ---------------------------------------------------------------------------
-
-def _c_trunc_div(a, b):
-    """Integer division truncating toward zero, matching C's '/' operator."""
-    q = abs(a) // abs(b)
-    if (a < 0) != (b < 0):
-        q = -q
-    return q
+# ---------------------------------------------------------------------------
+# Shared C-semantics primitives (see cocotools/c_compat.py): truncating
+# division for DIVIDE/MOD/INTDIV, and Ptr (the mutable char** stand-in)
+# used throughout this file's parser. Single implementation, imported
+# here rather than redefined, so every file that needs either one stays
+# in sync automatically.
+# ---------------------------------------------------------------------------
+from .c_compat import c_trunc_div, Ptr
 
 # ---------------------------------------------------------------------------
 # Expression node type constants
@@ -139,34 +135,13 @@ class ExprContext:
 # this with an object whose .pos field is incremented.
 # ---------------------------------------------------------------------------
 
-class Ptr:
-    """Mutable pointer into a string.  Simulates C `char **p`."""
-
-    __slots__ = ('s', 'pos')
-
-    def __init__(self, s, pos=0):
-        self.s   = s
-        self.pos = pos
-
-    def peek(self):
-        """Return current character (empty string if past end — falsy like C '\0')."""
-        return self.s[self.pos] if self.pos < len(self.s) else ''
-
-    def advance(self, n=1):
-        """(*p) += n"""
-        self.pos += n
-
-    def startswith(self, prefix):
-        return self.s.startswith(prefix, self.pos)
-
-    def at_end(self):
-        return self.pos >= len(self.s)
-
-    def remaining(self):
-        return self.s[self.pos:]
-
-    def __repr__(self):
-        return f'Ptr({self.s!r}, pos={self.pos})'
+# ---------------------------------------------------------------------------
+# Ptr -- mutable string pointer (C: char **) -- now a single shared
+# implementation in c_compat.py (imported above alongside c_trunc_div),
+# rather than a separate copy maintained here. Re-exported under this
+# name so `from .lw_expr import Ptr` (used by insn_funcs.py, lwasm_core.py,
+# and pseudo.py) continues to work unchanged.
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -609,7 +584,7 @@ class Expr:
             if vals[1] == 0:
                 if ctx.divzero: ctx.divzero()
                 return 0
-            return _c_trunc_div(vals[0], vals[1])
+            return c_trunc_div(vals[0], vals[1])
         if op == OPER_MOD:
             # C's % has the sign of the DIVIDEND (truncating remainder),
             # not the sign of the divisor (Python's native % is floor-based
@@ -618,7 +593,7 @@ class Expr:
                 if ctx.divzero: ctx.divzero()
                 return 0
             a, b = vals[0], vals[1]
-            return a - _c_trunc_div(a, b) * b
+            return a - c_trunc_div(a, b) * b
         if op == OPER_INTDIV:
             # lwasm's "\" operator is defined identically to "/" in the C
             # source (both use C's truncating integer division) -- NOT
@@ -628,7 +603,7 @@ class Expr:
             if vals[1] == 0:
                 if ctx.divzero: ctx.divzero()
                 return 0
-            return _c_trunc_div(vals[0], vals[1])
+            return c_trunc_div(vals[0], vals[1])
         if op == OPER_BWAND:  return vals[0] & vals[1]
         if op == OPER_BWOR:   return vals[0] | vals[1]
         if op == OPER_BWXOR:  return vals[0] ^ vals[1]

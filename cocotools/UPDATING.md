@@ -84,10 +84,11 @@ read this.
 When reading a changed C file during reconciliation, these are the
 specific shapes of bug that a surface-level "translate the syntax" pass
 will miss. All three were found the hard way during the 2026-07-13 audit.
-**`cocotools/c_compat.py`** now exists specifically to hold the fixes for
-these -- use it, and extend it, rather than re-deriving the fix inline at
-each call site (see that file's own docstrings for what's implemented vs.
-stubbed).
+**`cocotools/c_compat.py`** exists specifically to hold the fixes for
+these -- as of this writing, `lw_expr.py` imports both `c_trunc_div` and
+`Ptr` from it rather than defining its own copies (previously it defined
+both inline, redundantly). Import from `c_compat.py` in new code too,
+rather than reintroducing a third copy of either one.
 
 - **Truncating vs. floor division/modulo.** Any C `/` or `%` on a value
   that could ever be negative needs `c_compat.c_trunc_div` /
@@ -108,10 +109,9 @@ stubbed).
   roles, not just the looping one. Stub exists (`c_strlen_walk`),
   unimplemented.
 - **The `char **p` mutable-cursor idiom.** Already fully solved --
-  `c_compat.Ptr` (same class already in use as `lw_expr.py`'s `Ptr`)
-  reproduces a C function's ability to advance the *caller's* read
-  position by writing through a pointer, which Python's immutable
-  strings can't do directly.
+  `c_compat.Ptr` is the single implementation; `lw_expr.py` (and, via it,
+  `insn_funcs.py`/`lwasm_core.py`/`pseudo.py`, which import `Ptr` from
+  `lw_expr`) all resolve to the same class object, not separate copies.
 
 ## 5. Known gaps that are NOT bugs -- disclosed, not hidden
 
