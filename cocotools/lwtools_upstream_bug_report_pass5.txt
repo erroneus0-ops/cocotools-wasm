@@ -1,0 +1,184 @@
+================================================================================
+LWTOOLS BUG REPORT — lwasm/pass5.c address-resolution recovery loop
+================================================================================
+Project:     LWTOOLS (lwasm)
+File:        lwasm/pass5.c
+Function:    do_pass5()
+Version checked against: master branch, github.com/stahta01/LWTools
+             (unofficial mirror; the canonical hg repository at
+             lwtools.ca was not directly reachable during this review —
+             recommend confirming the same code is present in the
+             canonical repository and in the most recent tagged release
+             before acting on this report)
+Discovered:  2026-07-13, during an independent line-by-line audit
+             comparing lwasm's C source against a Python reimplementation
+             of the assembler (cocotools, part of a separate CoCo/OS-9
+             disassembly and restoration project). The audit was not
+             looking for lwasm bugs specifically — this was found as a
+             byproduct of verifying that a translation faithfully
+             reproduced lwasm's own behavior, including its quirks.
+Credit:      Discovered by Claude (Anthropic), performing the audit at
+             the request of and under the direction of the project owner.
+             Please credit however you see fit, or omit attribution
+             entirely, per your preference and process.
+
+--------------------------------------------------------------------------------
+SUMMARY
+--------------------------------------------------------------------------------
+In the fallback/recovery loop of do_pass5() (the pass responsible for
+forcing final resolution of every line's address), the loop advances a
+line-list cursor `cl` but repeatedly re-reduces and re-checks a DIFFERENT,
+fixed pointer `sl` instead of `cl`. Additionally, the loop's second
+resolution check tests `cl->addr` a second time where it almost certainly
+should test `cl->daddr` (the "data address," a separate field from `addr`
+that this same pass is explicitly responsible for resolving, per the
+initial counting loop earlier in the same function, which counts BOTH
+addr and daddr failures).
+
+--------------------------------------------------------------------------------
+CODE IN QUESTION
+--------------------------------------------------------------------------------
+    sl = as -> line_head;
+    while (cnt > 0)
+    {
+        ocnt = cnt;
+
+        // find an unresolved address
+        for ( ; sl && exprok(as, sl -> addr) && exprok(as, sl -> daddr); sl = sl -> next)
+            /* do nothing */ ;
+
+        // simplify address
+        for (cl = sl; cl; cl = cl -> next)
+        {
+            as -> cl = sl;
+            lwasm_reduce_expr(as, sl -> addr);
+
+            if (exprok(as, cl -> addr))
+            {
+                if (0 == --cnt)
+                    return;
+            }
+            lwasm_reduce_expr(as, sl -> daddr);
+            if (exprok(as, cl -> addr))        /* <-- see below */
+            {
+                if (0 == --cnt)
+                    return;
+            }
+        }
+
+        if (cnt == ocnt)
+            break;
+    }
+
+--------------------------------------------------------------------------------
+WHAT LOOKS WRONG
+--------------------------------------------------------------------------------
+1. Inside the `for (cl = sl; cl; cl = cl -> next)` loop, every reduce call
+   operates on `sl -> addr` / `sl -> daddr` rather than `cl -> addr` /
+   `cl -> daddr`. Since `sl` does not change within this inner loop (it is
+   only updated by the outer scan-forward loop above it), every iteration
+   of this loop re-reduces the SAME line's address/data-address,
+   regardless of which line `cl` has actually advanced to. `cl` is only
+   ever used for the exprok() checks, never for the actual reduction work.
+
+2. The second `if (exprok(as, cl -> addr))` — immediately following the
+   `lwasm_reduce_expr(as, sl -> daddr)` call — checks `cl -> addr` again,
+   identically to the first check three lines above. Given the function's
+   own initial counting loop treats `addr` and `daddr` as two independently
+   countable conditions ("first, count the number of non-constant
+   addresses... " counts both `cl->addr` and `cl->daddr` failures
+   separately, each incrementing `cnt`), and given the surrounding pattern
+   (reduce addr, check addr, reduce daddr, check ???), the second check
+   almost certainly was intended to be `cl -> daddr`, not `cl -> addr`
+   again.
+
+--------------------------------------------------------------------------------
+WHY THIS MATTERS
+--------------------------------------------------------------------------------
+- As written, this loop can never actually notice that a line's `daddr`
+  specifically has become resolved during this recovery pass — it always
+  re-tests `addr`, even in the branch that follows the `daddr` reduction.
+  If a line's `addr` was already resolved (and already counted/returned)
+  by the FIRST check, but its `daddr` remains unresolved, the second check
+  will spuriously see `cl->addr` (already known-resolved) and count/return
+  as though `daddr` had also just resolved — potentially decrementing
+  `cnt` for a line whose `daddr` is, in fact, still unresolved.
+- Conversely, a line whose `addr` is unresolved but whose `daddr` DOES
+  resolve during this pass will never get credit for that at this specific
+  check site, since `cl->addr` (not `cl->daddr`) is what's actually being
+  tested.
+- Combined with issue #1 (operating on `sl` instead of the advancing
+  `cl`), the practical effect is that this recovery loop's per-line
+  reduction work is not actually being applied to the lines it's nominally
+  iterating over — it's repeatedly redoing work on the line where the
+  problem was first detected, while walking `cl` forward without using it
+  for anything but the (already miscategorized) resolution checks.
+- The likely observable symptom, if a program actually exercises this
+  fallback path (i.e., has address expressions that fail to resolve during
+  the earlier, more common resolution passes and require this specific
+  recovery walk): either
+    (a) the assembler reports E_LINED_ADDRESS for lines whose daddr is
+        actually fine (false positive), or fails to report it for lines
+        whose daddr genuinely never resolves (false negative), and/or
+    (b) the `cnt` bookkeeping becomes inconsistent with the actual
+        resolution state of the program, potentially causing the loop to
+        exit earlier or later than it should relative to genuine progress.
+  I have not constructed a concrete failing assembly program to
+  demonstrate the symptom empirically — this report is based on a close
+  reading of the code and its evident intent (informed by the function's
+  own comments and the structure of the surrounding, non-buggy code in the
+  same file), not on an observed assembly failure. Recommend constructing
+  a minimal repro (e.g., a small program with a circular or late-binding
+  daddr-only expression that forces this specific loop to run) before
+  relying on this report alone to justify a fix, in case there's context
+  in the wider codebase that makes the current behavior intentional or
+  otherwise harmless in practice.
+
+--------------------------------------------------------------------------------
+SUGGESTED FIX (for consideration — not tested against the full test suite)
+--------------------------------------------------------------------------------
+    for (cl = sl; cl; cl = cl -> next)
+    {
+        as -> cl = cl;
+        lwasm_reduce_expr(as, cl -> addr);
+
+        if (exprok(as, cl -> addr))
+        {
+            if (0 == --cnt)
+                return;
+        }
+        lwasm_reduce_expr(as, cl -> daddr);
+        if (exprok(as, cl -> daddr))
+        {
+            if (0 == --cnt)
+                return;
+        }
+    }
+
+This replaces every `sl ->` reference inside this inner loop with `cl ->`,
+and corrects the second exprok() check to test `daddr` rather than `addr`
+again. This brings the loop's behavior in line with what its own
+surrounding structure (and the initial counting loop earlier in the same
+function, which treats addr/daddr as two distinct, independently-countable
+conditions) appears to intend.
+
+--------------------------------------------------------------------------------
+ADDITIONAL, LOWER-CONFIDENCE OBSERVATION (not a bug report, a question)
+--------------------------------------------------------------------------------
+Unrelated file, mentioned here only because it surfaced during the same
+audit and the maintainer may want to weigh in: in lwasm/lw_expr.c, the
+infix operator table used by lw_expr_parse_expr() maps BOTH "|" and "!" to
+the same operator, lw_expr_oper_bwor (bitwise OR):
+
+    { lw_expr_oper_bwor, "|", 50 },
+    { lw_expr_oper_bwor, "!", 50 },
+
+This may be entirely intentional (an alternate/legacy syntax for bitwise
+OR), in which case no action is needed — flagging only because it was
+unclear from the surrounding code or comments whether this is deliberate
+or a leftover, and it seemed worth a quick confirmation one way or the
+other rather than silently assuming either.
+
+================================================================================
+END OF REPORT
+================================================================================

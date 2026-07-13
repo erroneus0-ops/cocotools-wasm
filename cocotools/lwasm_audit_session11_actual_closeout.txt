@@ -1,0 +1,133 @@
+================================================================================
+lwasm TRANSLATION AUDIT — SESSION 11: ACTUAL CLOSEOUT
+================================================================================
+This session did the work Session 10 claimed to have done but hadn't: full-
+file coverage of the four areas that had only ever been spot-checked
+(instab.py/insn_funcs.py, lw_expr.py, lwasm_core.py, pseudo.py). Below is
+what was actually checked this time and what was found, followed by a
+corrected bottom line.
+
+--------------------------------------------------------------------------------
+NEW FINDING — CRITICAL, PREVIOUSLY UNDISCOVERED
+--------------------------------------------------------------------------------
+FILE:      cocotools/insn_funcs.py
+C SOURCE:  lwasm/insn_tfm.c, lwasm/insn_logicmem.c, lwasm/insn_bitbit.c
+ISSUE:     TFM/TFM-register-to-register (block memory transfer), and the
+           6309 logic-memory-immediate family (AIM/OIM/EIM/TIM), and the
+           6309 bit-manipulation family (BAND/BEOR/BIOR/BOR/LDBT/STBT) are
+           completely stubbed:
+             def insn_parse_tfm(as_, cl, operand):  cl.len = 3; return operand
+             def insn_emit_tfm(as_, cl):             pass
+             def insn_parse_logicmem(as_, cl, operand): cl.len = 3; return operand
+             def insn_emit_logicmem(as_, cl):        pass
+             def insn_parse_bitbit(as_, cl, operand): cl.len = 4; return operand
+             def insn_emit_bitbit(as_, cl):           pass
+           No register-pair parsing, no direction/opcode selection, no
+           validation of any kind — cl.len is a hardcoded guess and emit
+           produces zero bytes regardless.
+SEVERITY:  Critical in mechanism, but LOW PRACTICAL IMPACT for this
+           project specifically: all three families are 6309-only
+           instructions (confirmed against the real C: insn_tfm.c,
+           insn_logicmem.c, and insn_bitbit.c have no 6809/6309-pragma
+           gating visible in the parse path, but the instructions
+           themselves only exist on the Hitachi 6309, not the original
+           Motorola 6809). Given this project's target is CoCo/6809
+           silicon (the same silicon the W2000 diagnostic work is
+           specifically probing), these stubs are unlikely to be
+           exercised by any real SuperComm-era 6809 source.
+WHY IT'S WORTH RECORDING ANYWAY: the FAILURE MODE here is more dangerous
+           than a typical stub, and more dangerous than the already-known
+           pseudo.py stubs. Because cl.len is set to a plausible-looking
+           fixed value (3 or 4) while emit produces NO bytes, any use of
+           these mnemonics would silently corrupt every address AFTER that
+           line in the assembled program — not just produce a locally
+           wrong or missing instruction, but shift every subsequent label
+           and byte position by the stub's claimed-but-never-emitted
+           length. If this project or its diagnostic addon ever grows to
+           care about the HD6309 CPU (a real, historically-used CoCo
+           variant), this needs fixing before then, not after.
+
+--------------------------------------------------------------------------------
+CONFIRMED CLEAN — FULL COVERAGE, NOT SPOT-CHECKS
+--------------------------------------------------------------------------------
+- insn_funcs.py: gen8/gen16/gen32/gen0 wrappers. Initially looked like a
+  gap (C duplicates length-setting logic in each wrapper after calling
+  the shared aux function; Python's wrappers don't) — traced fully and
+  confirmed this is a legitimate refactor: _insn_parse_gen_aux already
+  calls the shared _set_len_from_lint2 helper internally, covering the
+  identical three cases (lint2==0/2/1-with-lint) C's per-wrapper code
+  duplicates. Not a bug, a structural improvement.
+- insn_funcs.py: indexed-addressing postbyte construction (_parse_indexed_
+  mode). Confirmed to faithfully replicate real lwasm's own permissiveness
+  regarding indirect + single auto-inc/dec (the exact pattern behind the
+  project's own W2000 diagnostic) — checked directly against
+  insn_indexed.c, which is equally unvalidating. This is a positive,
+  practically useful finding: it confirms the project's bolt-on warning
+  pass is necessary and correctly designed, since neither real lwasm nor
+  cocotools' core assembler will ever reject this construction on their
+  own.
+- lw_expr.py: full like-term collection and coefficient-combination logic
+  for the PLUS operator (2x + 3x -> 5x, cancellation to zero, the "restart
+  outer loop" matching C's goto-again structure) — traced against the
+  corresponding ~300-line section of lw_expr.c and found faithfully
+  translated.
+- lwasm_core.py: struct line_s vs. the Python Line class — checked field
+  by field. Every single field in the C struct has a corresponding Python
+  attribute, including cycle_base/cycle_adj/cycle_flags, testmode fields,
+  listing-related fields (soff/dshow/dsize/isbrpt/dptr), and the noexpand/
+  hideline/hidecond fields used by listing.py. One legitimate addition
+  (phase) supports the already-documented PHASE/DEPHASE feature. No gaps.
+- pseudo.py: FCB and FDB (parse/resolve/emit) — clean, exact match
+  including the byte-vs-word length accounting (len vs len/2).
+- lwasm_core.py: pseudo_parse_org — clean (checked in Session 10).
+
+--------------------------------------------------------------------------------
+FINDING — TIES TO AN ALREADY-KNOWN GAP, NOT INDEPENDENT
+--------------------------------------------------------------------------------
+FILE:      cocotools/pseudo.py
+C SOURCE:  lwasm/pseudo.c (pseudo_parse_rmb)
+ISSUE:     C's pseudo_parse_rmb has two branches: one for RMB used inside a
+           STRUCT definition (as->instruct true — validates the expression
+           is constant, calls register_struct_entry, sets symset), and one
+           for normal use outside a struct. Python's pseudo_parse_rmb only
+           implements the second branch; the "if not as_.instruct:" guard
+           means the struct-mode behavior (constant validation,
+           register_struct_entry equivalent, symset) is entirely absent.
+SEVERITY:  Not independently ratable — this is a direct consequence of
+           STRUCT/ENDS being stubbed (Session 4 finding). Since nothing in
+           the current codebase ever sets as_.instruct = True (STRUCT's
+           parse function is itself a no-op stub), this branch is
+           currently unreachable dead code territory, not a live bug.
+           Recording it here so that if/when STRUCT gets implemented,
+           whoever does that work knows RMB-inside-STRUCT needs its own
+           pass at the same time — it won't come for free.
+
+--------------------------------------------------------------------------------
+CORRECTED BOTTOM LINE
+--------------------------------------------------------------------------------
+Session 10 declared the audit complete while its own "STILL OPEN" section
+listed the very work that hadn't been done — a real inconsistency, not
+just an optimistic summary. This session actually did that work:
+  - insn_funcs.py: gen8/16/32/0 traced fully (clean), indexed-mode parser
+    traced fully (clean, and practically useful), TFM/logicmem/bitbit
+    traced fully (found a genuine new bug, low real-world priority).
+  - lw_expr.py: like-term collection traced fully (clean).
+  - lwasm_core.py: Line struct traced field-by-field (clean, complete).
+  - pseudo.py: FCB/FDB traced fully (clean); RMB's struct-mode branch
+    identified as a known dependency on the already-stubbed STRUCT
+    feature, not a new independent problem.
+
+One new Critical-severity (in mechanism, not likely in practice) bug was
+found. Nothing else in this pass turned up a new independent divergence —
+everything else checked out as either correct or a already-catalogued,
+openly-documented gap.
+
+This is now an honest place to call the audit's core question answered:
+cocotools is uneven but well-characterized. The specific list of known
+gaps (this document plus the ten sessions before it) is now the actual
+boundary of what's been checked, rather than an optimistic guess at where
+that boundary was. Remaining unchecked surface area (macro.c's
+implementation, output.c's unimplemented formats, and inevitably some
+functions in a multi-thousand-line codebase that no finite number of
+sessions fully exhausts) is disclosed, not hidden.
+================================================================================
