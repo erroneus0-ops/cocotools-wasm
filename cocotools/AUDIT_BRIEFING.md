@@ -52,6 +52,17 @@ Browse: http://www.lwtools.ca/hg/index.cgi/file/0baeffe2747f
 **lwasm subdirectory (primary audit target):**
 http://www.lwtools.ca/hg/index.cgi/file/0baeffe2747f/lwasm
 
+**Navigation note:** This is a Mercurial repository served via web interface,
+not a git repo. To read individual C source files, construct URLs like this:
+```
+http://www.lwtools.ca/hg/index.cgi/raw-file/0baeffe2747f/lwasm/FILENAME.c
+```
+The `/raw-file/` path returns raw file contents suitable for fetching.
+The `/file/` path returns the web-rendered view with line numbers.
+
+Example -- to read insn_rlist.c directly:
+http://www.lwtools.ca/hg/index.cgi/raw-file/0baeffe2747f/lwasm/insn_rlist.c
+
 Key C files to compare against:
 - `lwasm/insn_rlist.c` → `cocotools/insn_funcs.py` (register list section)
 - `lwasm/insn_inh.c` → `cocotools/insn_funcs.py` (inherent instructions)
