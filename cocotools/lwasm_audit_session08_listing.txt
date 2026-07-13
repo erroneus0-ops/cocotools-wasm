@@ -1,0 +1,103 @@
+================================================================================
+lwasm TRANSLATION AUDIT — SESSION 8
+================================================================================
+Repo audited:     https://github.com/erroneus0-ops/SuperComm-disassembled
+Component:        cocotools (Python translation of lwasm, LWTools 4.24)
+File audited:     cocotools/listing.py
+C reference used: lwasm/list.c (328 lines)
+C source location: github.com/stahta01/LWTools (master branch mirror) —
+                  same caveat as prior sessions re: canonical host.
+Date of session:  2026-07-13
+Auditor:          Claude (read-only audit per AUDIT_BRIEFING.md)
+
+SCOPE NOTE (deliberate, not a corner cut): unlike prior sessions, this
+file got a proportionate rather than exhaustive review. Reasoning: the
+listing (.lst) output is a human-readable side artifact — it has no effect
+on the assembled binary output (.bin/.rom/etc), which is what the
+project's verification strategy (byte-diff against real lwasm) actually
+depends on. A bug here would produce a cosmetically different listing
+file, not a wrong program. Given limited effort, this session prioritized
+confirming the overall structure and control flow are sound and looking
+for the same category of "invented addition" findings seen elsewhere,
+rather than checking every column-alignment and format-string detail
+against the real output byte-for-byte. Flagging this explicitly per the
+"let's be complete" instruction — this is a conscious scoping decision the
+human should be aware of, not silent under-coverage.
+
+--------------------------------------------------------------------------------
+FINDING 1 (POSITIVE)
+--------------------------------------------------------------------------------
+FILE:      cocotools/listing.py  (do_list / _do_list_inner)
+C SOURCE:  lwasm/list.c  (do_list)
+ISSUE:     None found in the overall control flow. The output-file-opening
+           logic (stdout vs named file vs "-", FLAG_LIST gating), the
+           noexpand_start/noexpand_end byte-collection grouping for
+           macro-expanded line blocks, the warning-printing logic (dual
+           print to both of and stdout under certain conditions), and the
+           PRAGMA_NOEXPANDCOND hidecond skip all appear structurally
+           consistent with the C source on a structural read-through.
+SEVERITY:  N/A
+CAVEAT:    This is a structural read-through, not a byte-for-byte column/
+           format-string comparison (see scope note above) — column widths,
+           padding, and exact printf-style format specifiers were spot-
+           checked but not exhaustively verified against C's fprintf calls.
+
+--------------------------------------------------------------------------------
+FINDING 2
+--------------------------------------------------------------------------------
+FILE:      cocotools/listing.py
+C SOURCE:  lwasm/list.c, lwasm/lwasm.h
+ISSUE:     PRAGMA_NOLISTCODE, checked first thing in the per-line listing
+           loop (skip the line entirely from the listing if set), does not
+           exist anywhere in real lwasm — confirmed via grep across both
+           list.c and lwasm.h. It's a cocotools-only addition (bit 29 in
+           the pragma bitfield, consistent with the established pattern of
+           appending inventions after the real bits rather than inserting
+           them and shifting numbering — same safe pattern seen with the
+           PHASE/DEPHASE error codes in Session 1).
+SEVERITY:  Minor (does not affect assembled binary output; only affects
+           .lst file structure, and only when a cocotools-specific pragma
+           name is deliberately used — no real lwasm source would ever
+           reference it)
+EVIDENCE:  grep for "NOLISTCODE" across list.c and lwasm.h: no matches.
+           cocotools/lwasm_types.py: PRAGMA_NOLISTCODE = 1 << 29.
+           cocotools/listing.py: checked as the very first condition in
+           _do_list_inner's per-line loop.
+CONSEQUENCE: purely additive — using this pragma in cocotools-targeted
+           source gives a convenience not available in real lwasm. Worth
+           documenting in DESIGN.md as an intentional extension (same
+           recommendation as for PHASE/DEPHASE) so it's clearly understood
+           as "cocotools-only" rather than discovered by surprise later.
+
+--------------------------------------------------------------------------------
+SUMMARY — SESSION 8
+--------------------------------------------------------------------------------
+Critical findings:    0
+Significant findings: 0
+Minor findings:       1  (Finding 2 — undocumented cocotools-only pragma,
+                          low impact, additive rather than divergent)
+Verified correct:     1  (Finding 1 — overall structure, with the noted
+                          proportional-review caveat)
+
+Given the low stakes of this file relative to the project's core
+verification goal, this is likely sufficient coverage unless listing
+output specifically becomes something the human wants to rely on/compare
+directly against real lwasm's .lst files.
+
+--------------------------------------------------------------------------------
+NOT YET AUDITED — REMAINING SCOPE
+--------------------------------------------------------------------------------
+  - lwasm/macro.c vs cocotools/ — still no Python file exists at all.
+    This is the last unaudited "forward" file and arguably the biggest
+    single gap by functional impact (MACRO/ENDM don't work at all).
+  - lwasm/output.c's 9 unimplemented format writers (no Python to diff yet)
+  - Session 3's open reachability question (register_symbol, cl=NULL)
+  - Full coverage of insn_funcs.py beyond rlist (Session 1)
+  - Full coverage of lw_expr.py beyond the sections sampled in Session 2
+  - Full coverage of pseudo.py's non-stub, non-IF-family functions
+  - lwasm_core.py beyond the symbol-table section (Session 3)
+
+Per the agreed plan: macro.c's scope assessment is next (closing out the
+"forward" pass entirely), then back to Sessions 1-4's files for full-file
+coverage of everything not already deep-reviewed there.
+================================================================================

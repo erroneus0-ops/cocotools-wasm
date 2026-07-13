@@ -1,0 +1,125 @@
+================================================================================
+lwasm TRANSLATION AUDIT — SESSION 3
+================================================================================
+Repo audited:     https://github.com/erroneus0-ops/SuperComm-disassembled
+Component:        cocotools (Python translation of lwasm, LWTools 4.24)
+File audited:     cocotools/lwasm_core.py (register_symbol / lookup_symbol
+                  section only — this file is 1298 lines total and maps to
+                  multiple C files; symbol handling was the section checked
+                  this session)
+C reference used: lwasm/symbol.c, lwasm/lwasm.h (macros/constants)
+C source location: github.com/stahta01/LWTools (master branch mirror) —
+                  same caveat as prior sessions re: canonical host.
+Date of session:  2026-07-13
+Auditor:          Claude (read-only audit per AUDIT_BRIEFING.md)
+
+--------------------------------------------------------------------------------
+FINDING 1 (POSITIVE — VERIFIED CORRECT)
+--------------------------------------------------------------------------------
+FILE:      cocotools/lwasm_core.py  (register_symbol)
+C SOURCE:  lwasm/symbol.c  (register_symbol)
+ISSUE:     None found in the core logic.
+SEVERITY:  N/A
+EVIDENCE:  Checked, line-by-line, against C:
+             - Symbol-name validity checks (first-character rule allowing
+               $/@/? elsewhere in the name; digit-after-$/@ rejection;
+               per-character SYMCHARS validation) — logic matches exactly,
+               including the nested-condition structure.
+             - SSYMCHARS / SYMCHARS character sets — confirmed byte-for-byte
+               identical: C's SSYMCHARS = "A-Za-z_@$." and SYMCHARS = that
+               plus ".?0123456789"; Python's SSYMCHARS/SYMCHARS in
+               lwasm_types.py match exactly.
+             - Local-symbol detection loop (@, ?, and pragma-gated $) —
+               matches.
+             - The case-insensitive binary-tree symbol lookup/insert,
+               including the "SET symbol" versioning special case (ndir
+               forced to 0 across case/context ties only when appropriate,
+               version chaining via nextver, subtree re-parenting when
+               replacing a SET symbol) — matches C's tree logic exactly,
+               including the somewhat tricky ordering: strcasecmp first,
+               then exact-case tiebreak (unless nocase pragma/flag), then
+               context tiebreak for locals.
+             - Auto-export-on-PRAGMA_EXPORT logic — matches.
+           CURPRAGMA macro (C: "(((l) && ((l)->pragmas & (p))) ? 1 : 0)")
+           is reproduced exactly by Python's curpragma() helper, including
+           the NULL-line short-circuit.
+
+--------------------------------------------------------------------------------
+FINDING 2
+--------------------------------------------------------------------------------
+FILE:      cocotools/lwasm_core.py  (register_symbol)
+C SOURCE:  lwasm/symbol.c  (register_symbol)
+ISSUE:     One line diverges from C, in a direction that makes Python safer
+           than C rather than less faithful — flagging per the audit's
+           "note even benign-seeming deviations" instruction rather than
+           because it's clearly wrong.
+SEVERITY:  Minor
+EVIDENCE:  C:      if (islocal) context = cl -> context;
+                   /* no NULL check on cl here */
+           Python: if islocal: context = cl.context if cl else -1
+           If register_symbol is ever called with cl == NULL while
+           registering a symbol whose name contains '@', '?', or an
+           unescaped '$' (i.e., islocal becomes true with no line context),
+           real lwasm would dereference a NULL pointer at this line — a
+           crash. Python instead falls back to context = -1 and continues.
+           I have NOT yet confirmed whether this code path is actually
+           reachable in practice (i.e., whether any real call site invokes
+           register_symbol with cl=NULL for a local-looking symbol name) —
+           noting it as an open question rather than asserting it matters.
+           If it IS unreachable in practice, this is a harmless defensive
+           addition and can be disregarded. If it IS reachable, it's a case
+           where cocotools would silently do something different (proceed
+           with context=-1) rather than replicate the C crash — worth a
+           deliberate decision either way rather than an accidental one.
+NEXT STEP: grep all call sites of register_symbol in pass1.c / pass2.c /
+           pseudo.c (the C source) for any that could plausibly pass a
+           NULL line pointer, to settle whether this is reachable.
+
+--------------------------------------------------------------------------------
+FINDING 3 (POSITIVE — VERIFIED CORRECT)
+--------------------------------------------------------------------------------
+FILE:      cocotools/lwasm_core.py  (lookup_symbol)
+C SOURCE:  lwasm/symbol.c  (lookup_symbol)
+ISSUE:     None found.
+SEVERITY:  N/A
+EVIDENCE:  Local-symbol detection (@, ?, pragma-gated $, including the
+           cl==NULL fallback path that checks as->pragmas directly) matches
+           C exactly. The "cannot look up a local symbol without a line
+           context" early-return matches. The tree search loop's
+           case-sensitivity tiebreak and context tiebreak match C exactly.
+           Python adds a redundant (but harmless) explicit "and cl" check
+           in the context-tiebreak condition; since local can only be True
+           here when cl is guaranteed non-None (given the earlier
+           early-return), this changes nothing observable — a defensive
+           idiom difference, not a bug.
+
+--------------------------------------------------------------------------------
+SUMMARY — SESSION 3
+--------------------------------------------------------------------------------
+Critical findings:    0
+Significant findings: 0
+Minor findings:       1  (Finding 2 — needs reachability check, likely
+                          benign)
+Verified correct:     2  (register_symbol and lookup_symbol core logic)
+
+This section stands in contrast to Sessions 1 and 2: instab.py and
+lw_expr.py had real, demonstrable bugs; the symbol-table logic checked
+this session is a careful, faithful translation of genuinely tricky C
+(case-insensitive BST with context-scoped locals and SET-symbol
+versioning) with no behavioral divergence found. Worth noting for calibration
+purposes — the quality of the translation is not uniform across files, and
+this is useful context for how much scrutiny to apply file-by-file going
+forward.
+
+NOT YET AUDITED THIS SESSION (lwasm_core.py is large; only the symbol
+table section was checked):
+  - Line/AsmState core structures and the rest of lwasm_core.py (evaluate_var/
+    evaluate_special glue, emit helpers, reduce_expr, listing hooks) —
+    only imports and the symbol-table section were reviewed.
+  - pass1.py vs pass1.c
+  - passes.py vs the pass2-6 C sources
+  - pseudo.py vs pseudo.c (macro expansion, conditional assembly, and the
+    IF-family pseudo-ops that Session 2's Finding 2 touches on)
+  - input_system.py vs input.c
+  - listing.py vs list.c
+================================================================================

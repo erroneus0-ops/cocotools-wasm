@@ -1,0 +1,229 @@
+================================================================================
+lwasm TRANSLATION AUDIT — SESSION 9
+================================================================================
+Repo audited:     https://github.com/erroneus0-ops/SuperComm-disassembled
+Component:        cocotools (Python translation of lwasm, LWTools 4.24)
+File audited:     N/A — cocotools has NO macro.py or equivalent. This
+                  session is a SCOPING report, not a bug-comparison report,
+                  since there is no Python code to diff against yet.
+C reference used: lwasm/macro.c (full, 350 lines)
+C source location: github.com/stahta01/LWTools (master branch mirror) —
+                  same caveat as prior sessions re: canonical host.
+Date of session:  2026-07-13
+Auditor:          Claude (read-only audit per AUDIT_BRIEFING.md)
+
+PURPOSE OF THIS REPORT: this closes out the "forward" pass of the audit
+(pass2 through macro.c) by fully scoping the one remaining C file with
+zero Python translation. Rather than "no bugs to report" being a dead end,
+this is meant to function as an implementation roadmap for whenever
+macro.py gets built, plus a heads-up about integration points that already
+exist and are waiting for it.
+
+--------------------------------------------------------------------------------
+WHAT MACRO.C ACTUALLY CONTAINS (4 functions, all self-contained)
+--------------------------------------------------------------------------------
+
+1. pseudo_parse_macro(as, l, p) — handles the "MACRO" directive itself.
+   - Requires a label (macro name) on the same line; errors E_MACRO_NONAME
+     if absent.
+   - Errors E_MACRO_RECURSE if already inside a macro definition (nested
+     MACRO not allowed).
+   - Errors E_MACRO_DUPE if a macro with this name (case-insensitive) is
+     already registered.
+   - Parses one optional flag word after the name: "noexpand" (case-
+     insensitive) — sets macro_noexpand flag; any other/no flag is
+     silently ignored (not an error).
+   - Registers a new macrotab_t entry at the HEAD of as->macros (so lookup
+     later finds the most-recently-defined macro of a given name first,
+     though duplicates are actually rejected above so this mostly matters
+     for iteration order, not correctness).
+   - Respects as->skipcond (conditional-assembly skip state): if currently
+     skipping, just sets as->skipmacro=1 and skips the operand without
+     actually registering anything.
+   - Sets as->inmacro = 1 to put the assembler into "collecting macro body
+     lines" mode.
+
+2. pseudo_parse_endm(as, l, p) — handles "ENDM".
+   - Errors E_MACRO_ENDM if not currently inside a macro definition.
+   - Respects as->skipcond the same way (clears skipmacro instead of
+     erroring).
+   - Sets as->inmacro = 0.
+   - IMPORTANT: allocates a new symbol context via lwasm_next_context()
+     when a macro definition ends — a macro definition counts as a
+     context break for local symbol scoping. (cocotools already has
+     next_context() implemented and verified in Session 3 — this call
+     is a one-line hookup once macro.py exists.)
+
+3. add_macro_line(as, optr) — called once per source line while
+   as->inmacro is true (i.e., every line between MACRO and ENDM). Just
+   appends the raw line text to the current macro's lines[] array
+   (realloc + copy). Returns 0 if not currently in a macro (caller should
+   treat that as "this line wasn't consumed by macro collection").
+   NOTE: "the current macro will ALWAYS be the first one in the table"
+   (as->macros is a singly-linked list with newest at head) — this is
+   safe ONLY as long as nested macro definition is genuinely impossible
+   (which pseudo_parse_macro enforces via E_MACRO_RECURSE above). Worth
+   preserving that invariant explicitly if/when translated, since the
+   simplification (always operate on as->macros, not a tracked
+   "currently defining" pointer) depends on it.
+
+4. expand_macro(as, l, p, opc) — the invocation/expansion engine. This is
+   the substantial piece. Given an opcode-position string `opc`, checks if
+   it matches a registered macro name (case-insensitive); returns -1
+   immediately (meaning "not a macro, caller should try normal instruction
+   lookup") if no match.
+   If it IS a macro:
+     - Parses a comma-separated argument list from the remainder of the
+       line. Each argument runs to the next unescaped comma or whitespace.
+       Backslash escapes the next character (so `\,` includes a literal
+       comma in an argument, `\ ` includes a literal space, etc.) —
+       argument text has escape sequences collapsed (backslash removed,
+       following char kept literally) after extraction.
+     - Allocates a new symbol context for the macro body (separate from
+       the context used when it end — this is the *invocation*-scoped
+       context, distinct from the *definition*-end context bump in
+       pseudo_parse_endm above).
+     - Builds a single string (linebuff) representing ALL the macro's
+       body lines concatenated with '\n', with substitutions applied
+       per-character while scanning each stored body line:
+         \1 .. \9        → that positional argument's text (silently does
+                           nothing / consumes no output if out of range,
+                           i.e. n<1 or n>nargs — NOT an error)
+         \0              → the macro's own name
+         \{n}            → same as \n but supports multi-digit n (e.g.
+                           \{10}, \{23}) — also silently no-ops if
+                           n<1 or n>nargs; \{0} → macro name
+         \*              → ALL arguments, comma-joined
+         \#              → the argument COUNT (as decimal digits)
+         \\              → literal backslash (implicit: only \<known-char>
+                           patterns are special-cased above; anything else
+                           following a backslash is NOT specially unescaped
+                           here — this is a DIFFERENT escaping pass than
+                           the argument-parsing escape handling above;
+                           worth being careful about this distinction when
+                           translating, they are NOT the same code path)
+     - If macro_noexpand flag is set, wraps the expansion with injected
+       control lines: "\x01\x01SETNOEXPANDSTART\n" before, and
+       "\x01\x01SETNOEXPANDEND\n" after (these feed the noexpand_start/
+       noexpand_end counters consumed by listing.py — see Session 8).
+     - ALWAYS appends "\x01\x01SETCONTEXT {oldcontext}\n\x01\x01SETLINENO
+       {lineno+1}\n" at the very end — restoring the caller's symbol
+       context and advancing the reported line number for what follows,
+       once the macro body has been fully processed.
+     - Pushes the entire constructed string as a new input source via
+       input_openstring() (cocotools has this: InputSystem.open_string(),
+       confirmed in Session 7) — i.e., macro expansion works by
+       re-injecting synthesized source text back into the SAME input
+       stream, not by some separate execution mechanism. This is why
+       pass1.py needs to recognize and act on the injected \x01\x01
+       control lines — they're how the macro system communicates context/
+       line-number bookkeeping back to the normal line-by-line reader.
+     - Frees the argument array; sets l->hideline = 1 (the MACRO
+       invocation line itself doesn't appear in the listing, matching how
+       the "\x01\x01SETNOEXPANDSTART/END" wrapping and other injected
+       lines are also generally hidden — ties back to listing.py's
+       noexpand grouping logic from Session 8).
+
+--------------------------------------------------------------------------------
+INTEGRATION POINTS ALREADY IN PLACE (GOOD NEWS)
+--------------------------------------------------------------------------------
+Confirmed by direct inspection of pass1.py: the rest of the codebase
+already anticipates this module and is written defensively around its
+absence:
+  - pass1.py checks `hasattr(as_, 'expand_macro')` and
+    `hasattr(as_, 'add_macro_line')` before calling them — meaning right
+    now, with no macro.py, these calls are simply skipped (no crash, but
+    also no macro support), and the moment an AsmState with those methods
+    exists, pass1.py will start calling them with no changes needed on
+    pass1.py's side.
+  - pass1.py ALREADY fully implements the RECEIVING side of the
+    "\x01\x01" injected-control-line protocol: it recognizes and acts on
+    SETCONTEXT, SETLINENO, SETNOEXPANDSTART, and SETNOEXPANDEND lines
+    (confirmed at pass1.py lines ~148-166). This is the exact protocol
+    expand_macro() (item 4 above) generates.
+  - InputSystem.open_string() (Session 7, verified correct) is exactly
+    the hook expand_macro() needs to push its generated text back into
+    the input stream.
+  - AsmState.next_context() (Session 3, verified correct) is exactly the
+    hook pseudo_parse_endm needs for its context-break behavior.
+  - pseudo.py currently has pseudo_parse_macro and pseudo_parse_endm as
+    _stub_parse no-ops (Session 4 finding) — these are exactly the two
+    functions that would need real implementations, matching items 1 and
+    2 above, moved from pseudo.py into a new macro.py (or implemented
+    directly in pseudo.py, either is a reasonable structural choice).
+
+PRACTICAL IMPLICATION: implementing macro support is NOT a large,
+architecturally risky undertaking requiring changes across the codebase —
+it is a genuinely self-contained ~350-line piece of logic with clean,
+already-anticipated integration points. This is good news for
+prioritization: of all the gaps found in this audit so far, this one has
+the clearest, most isolated path to being closed.
+
+--------------------------------------------------------------------------------
+THINGS TO GET RIGHT WHEN THIS IS EVENTUALLY IMPLEMENTED (heads up, not
+findings against existing code, since none exists yet)
+--------------------------------------------------------------------------------
+  - Two DIFFERENT escaping passes exist in expand_macro and must not be
+    conflated: (a) escaping during ARGUMENT EXTRACTION (backslash-escapes
+    commas/whitespace so they can appear inside an argument), and (b)
+    substitution escaping during BODY-LINE SUBSTITUTION (backslash
+    followed by a digit, *, #, or {, is special; nothing else is
+    unescaped at this stage). Translating both into a single unified
+    "unescape" helper would be a subtle but real deviation from C.
+  - \{n} parsing needs to handle multi-digit n correctly, including the
+    "no closing brace" backtrack (`if (*p2 != '}') p2--;` — compensates
+    for the lookahead's autoincrement so the character after the digits
+    isn't accidentally consumed if it isn't '}').
+  - Out-of-range argument references (\n or \{n} where n < 1 or n >
+    nargs) must silently produce NOTHING (not an error, not a literal
+    substitution) — matches C's `continue` in that case.
+  - \0 and \{0} both refer to the macro's own name, not "argument zero."
+  - The context-numbering sequence matters for correctness of local-label
+    scoping across macro invocations: pseudo_parse_endm bumps context once
+    at definition-end; expand_macro bumps a SEPARATE, new context at each
+    *invocation*, then restores the caller's prior context via the
+    injected SETCONTEXT line afterward. Two different context bumps for
+    two different reasons — worth being precise about which is which.
+
+--------------------------------------------------------------------------------
+SUMMARY — SESSION 9
+--------------------------------------------------------------------------------
+This is not a bug report — it's a completeness/roadmap entry. Macro
+support (MACRO/ENDM definition and invocation/expansion) remains entirely
+unimplemented in cocotools. The good news, established this session: the
+surrounding codebase (pass1.py, input_system.py, lwasm_core.py) already has
+clean, verified-correct integration points waiting for it, so this is a
+well-scoped, self-contained ~350-line implementation task rather than an
+architecturally risky one.
+
+This closes out the "forward" pass of the audit (pass2.c through
+macro.c). All C files touched by the original AUDIT_BRIEFING.md's
+"cocotools" scope have now been at least scoped, if not fully diffed.
+
+--------------------------------------------------------------------------------
+FULL REMAINING SCOPE — GOING BACK TO FILL GAPS (per agreed plan)
+--------------------------------------------------------------------------------
+As agreed, next is returning to Sessions 1-4's files for full-file
+coverage, EXCLUDING sections already deep-reviewed there:
+  1. cocotools/instab.py — mnemonic-diff was exhaustive (Session 1); the
+     insn_funcs.py side (gen8/16/32, indexed, rel8/16, tfm, logicmem,
+     bitbit, conv-emit logic) beyond the rlist section is NOT yet covered.
+  2. cocotools/lw_expr.py — constant-folding switch, precedence table, and
+     recursion guard were checked (Session 2); like-term collection/
+     distribution logic (~C lines 800-1100) and the compare/copy/contains
+     structural helpers are NOT yet covered.
+  3. cocotools/lwasm_core.py — symbol table section was checked (Session
+     3); the rest of this 1298-line file (Line/AsmState structures, emit
+     helpers, and — importantly — reduce_expr itself, which is the
+     function that calls into lw_expr's simplify machinery examined in
+     Session 2) is NOT yet covered.
+  4. cocotools/pseudo.py — stub inventory was exhaustive (Session 4); the
+     IF-family was checked; everything else IMPLEMENTED (ORG, RMB,
+     FCB/FDB/FCC family, END, EQU/SET, IFDEF/IFNDEF/IFP1, etc.) is NOT yet
+     covered.
+
+Also still outstanding:
+  - Session 3's open reachability question (register_symbol, cl=NULL)
+  - output.c's 9 unimplemented format writers (moot until/unless Python
+    implementations exist to diff against)
+================================================================================

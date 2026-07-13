@@ -1,0 +1,240 @@
+================================================================================
+lwasm TRANSLATION AUDIT — SESSION 6
+================================================================================
+Repo audited:     https://github.com/erroneus0-ops/SuperComm-disassembled
+Component:        cocotools (Python translation of lwasm, LWTools 4.24)
+Files audited:    cocotools/passes.py (do_pass7, do_output, _collect_decb,
+                  _collect_raw) — full line-by-line coverage of these
+                  functions specifically.
+C reference used: lwasm/pass7.c (full, 75 lines), lwasm/output.c (partial —
+                  write_code_raw, write_code_rawrel, write_code_decb, and
+                  the do_output dispatcher fully reviewed; the other 9
+                  format writers in this 1362-line file were inventoried
+                  but not diffed — see closing section)
+C source location: github.com/stahta01/LWTools (master branch mirror) —
+                  same caveat as prior sessions re: canonical host.
+Date of session:  2026-07-13
+Auditor:          Claude (read-only audit per AUDIT_BRIEFING.md)
+
+--------------------------------------------------------------------------------
+FINDING 1
+--------------------------------------------------------------------------------
+FILE:      cocotools/passes.py  (do_pass7)
+C SOURCE:  lwasm/pass7.c  (do_pass7)
+ISSUE:     The core emit loop matches exactly, but real lwasm's do_pass7
+           also has a PRAGMA_TESTMODE hook — lwtools' own internal
+           regression-test mechanism, where a source line's comment can
+           embed an expected byte sequence or expected error code, checked
+           automatically during assembly. This entire mechanism is absent
+           from the Python translation.
+SEVERITY:  Minor (this is lwtools' own test-suite infrastructure, not a
+           feature real-world 6809/CoCo source would use; unlikely to
+           matter for assembling actual programs, including SuperComm)
+EVIDENCE:  C has an additional ~20 lines inside the per-line loop, gated on
+           CURPRAGMA(cl, PRAGMA_TESTMODE), calling
+           lwasm_parse_testmode_comment() and comparing actual vs expected
+           output/error via lwasm_error_testmode(). Python's do_pass7 has
+           no equivalent code at all. Flagging for completeness of the
+           audit record; recommend low priority unless the project ever
+           wants to reuse lwtools' own .asm test corpus for verification.
+
+--------------------------------------------------------------------------------
+FINDING 2 (POSITIVE — VERIFIED CORRECT)
+--------------------------------------------------------------------------------
+FILE:      cocotools/passes.py  (_collect_decb)
+C SOURCE:  lwasm/output.c  (write_code_decb)
+ISSUE:     None. Verified line-by-line, including the trickiest part: the
+           two-pass "write placeholder, remember its position, patch it
+           later" length-field mechanism.
+SEVERITY:  N/A
+EVIDENCE:  C uses fseek()/ftell() against a FILE* to backpatch the 2-byte
+           block-length field once a block ends; Python uses direct index
+           assignment into a bytearray (buf[preambloc] = ...). The
+           position-tracking arithmetic (preambloc = position-of-marker +
+           1) matches exactly between the two approaches — this is a
+           correct adaptation of a file-stream algorithm to an in-memory
+           buffer, not a behavioral change. Preamble byte layout (0x00
+           marker, 2 length bytes, 2 address bytes), postamble (0xFF, 0x00,
+           0x00, 2 exec-address bytes), and the "new block triggered when
+           caddr != nextcalc" condition all match exactly.
+
+--------------------------------------------------------------------------------
+FINDING 3 — CRITICAL
+--------------------------------------------------------------------------------
+FILE:      cocotools/passes.py  (_collect_raw)
+C SOURCE:  lwasm/output.c  (write_code_raw)
+ISSUE:     This is not a subtle bug — it is a different algorithm entirely.
+           Real lwasm's RAW output format is a simple SEQUENTIAL,
+           LINE-ORDER byte dump that ignores addresses completely (aside
+           from one special case at the very start of the file). Python's
+           _collect_raw instead computes an address RANGE across the whole
+           program and reconstructs an address-INDEXED memory image. These
+           produce identical output only in the simplest case (a single
+           ORG, contiguous code/data, no gaps) — which may be common, but
+           is not guaranteed, and the C source's own comment explicitly
+           warns about the multiple-ORG case.
+SEVERITY:  Critical
+EVIDENCE:  C (write_code_raw), with its own explanatory comment preserved:
+             /*
+             raw merely writes all the bytes directly to the file as is.
+             ORG is just a reference for the assembler to handle absolute
+             references. Multiple ORG statements will produce mostly
+             useless results.
+             However, if a run of RMBs exists at the start that is ended
+             by an ORG statement, that run of RMBs will not be output as
+             a zero fill.
+             */
+             void write_code_raw(asmstate_t *as, FILE *of)
+             {
+                 line_t *cl, *sl;
+                 sl = as -> line_head;
+                 for (cl = sl; cl; cl = cl -> next)
+                 {
+                     if (cl -> outputl > 0)
+                         break;
+                     if (instab[cl -> insn].flags & lwasm_insn_org)
+                         sl = cl;      // skip past leading RMB-before-ORG
+                 }
+                 for (cl = sl; cl; cl = cl -> next)
+                 {
+                     if (cl -> len > 0 && cl -> outputl < 0)
+                     {
+                         // RMB gap encountered mid-stream: zero-fill,
+                         // in LINE order, addresses never consulted
+                         for (i = 0; i < cl -> len; i++)
+                             writebytes("\0", 1, 1, of);
+                         continue;
+                     }
+                     else if (cl -> outputl > 0)
+                         writebytes(cl -> output, cl -> outputl, 1, of);
+                 }
+             }
+           This algorithm NEVER reads cl->addr. It writes bytes strictly
+           in line-list order: real output bytes where present, explicit
+           zero-fill for RMB gaps encountered along the way, and it
+           deliberately SKIPS (does not zero-fill) any RMB run that occurs
+           before the first ORG in the file.
+
+           Python (_collect_raw):
+             def _collect_raw(as_):
+                 """write_code_raw: flat byte stream, gaps filled with
+                 zeros."""
+                 # 1. scan ALL lines with outputl>0, find min/max address
+                 # 2. allocate a zero-filled buffer sized (max - min)
+                 # 3. copy each line's bytes to buf[addr - min : ...]
+                 ...
+           This computes a single global min/max address window across the
+           ENTIRE program and places every line's output at its literal
+           address offset — an address-indexed memory image, not a
+           line-order stream. It has no concept of the ORG flag at all
+           (confirmed: cocotools/instab.py DOES correctly carry the ORG
+           flag on the 'org' table entry — OR = 1<<11 — so the data needed
+           to replicate the real algorithm is available; _collect_raw
+           simply never consults it).
+CONSEQUENCE: 
+           - Single-ORG, single-contiguous-block programs: the two
+             algorithms coincide (line order and address order are the
+             same thing when there's only one increasing run), so RAW
+             output should currently match for the common case.
+           - Any program with more than one ORG, or any reordering /
+             non-contiguous layout: real lwasm concatenates in line order
+             (per its own comment, producing "mostly useless" but
+             DETERMINISTIC and reproducible output); cocotools instead
+             tries to build a coherent memory image by address, which will
+             produce a DIFFERENT byte sequence — different length, at
+             minimum, since cocotools' version spans the full address
+             range including gaps between non-contiguous ORG'd blocks that
+             real lwasm's version would never insert.
+           - Leading RMB-before-first-ORG: real lwasm explicitly omits this
+             from output entirely (per the comment and the sl-skip logic).
+             cocotools' address-range approach would only avoid the same
+             bytes if that leading RMB has outputl<=0 (likely true) AND
+             happens to fall outside the [min,max] address window it
+             computes — but since the window is address-based rather than
+             line/skip-based, this alignment is coincidental, not
+             guaranteed, and breaks as soon as addresses aren't monotonic
+             with line order.
+FIX DIRECTION (not applied — for the human to decide): _collect_raw needs
+           to be rewritten to mirror the real algorithm: find the first
+           line with actual output, treating any ORG-flagged line
+           encountered before it as advancing the true starting point (so
+           leading RMB-before-ORG is skipped, not zero-filled); then walk
+           forward in LINE order, not address order, emitting real bytes
+           for cl.outputl>0 lines and zero-fill for cl.len>0 &&
+           cl.outputl<0 (RMB) lines encountered along the way.
+
+--------------------------------------------------------------------------------
+FINDING 4
+--------------------------------------------------------------------------------
+FILE:      cocotools/passes.py  (do_output)
+C SOURCE:  lwasm/output.c  (do_output dispatcher + 12 format writers)
+ISSUE:     Only DECB and RAW output formats are implemented; the other 10
+           formats (BASIC, rawrel, obj, os9, hex, srec, ihex, lwmod,
+           dragon, abs) all raise NotImplementedError. This is openly
+           stated in do_output's own docstring — not hidden — consistent
+           with the pattern from Session 4's pseudo.py findings.
+SEVERITY:  Significant, with a specific practical concern flagged below
+EVIDENCE:  do_output's docstring: "Only DECB and RAW formats are
+           implemented here; other formats raise NotImplementedError."
+PRACTICAL CONCERN (uncertain, worth the human confirming directly): the
+           repository root contains OS-9-specific disassembly tooling
+           (DIS6809_MANUAL.md, dis6809_os9_engine.py, and the general
+           framing of SuperComm as disassembly/restoration work), which
+           suggests SuperComm itself may be an OS-9 module rather than a
+           Disk BASIC (DECB) binary. If that's the case, the OUTPUT_OS9
+           format — currently entirely unimplemented in cocotools — would
+           be the one actually needed to reassemble and byte-diff
+           SuperComm against the original, not DECB or RAW. I have not
+           confirmed SuperComm's actual target format directly (would
+           require inspecting the original binary's header/structure,
+           which is outside this session's scope) — flagging as an open
+           question rather than asserting it, since getting this wrong in
+           either direction wastes effort.
+
+--------------------------------------------------------------------------------
+SUMMARY — SESSION 6
+--------------------------------------------------------------------------------
+Critical findings:    1  (Finding 3 — _collect_raw is a different algorithm
+                          from write_code_raw; only coincidentally matches
+                          for the simplest single-ORG case)
+Significant findings: 1  (Finding 4 — 10 of 12 output formats unimplemented;
+                          possible mismatch with SuperComm's actual target
+                          format, needs confirmation)
+Minor findings:       1  (Finding 1 — PRAGMA_TESTMODE hook absent, low
+                          real-world impact)
+Verified correct:     1  (Finding 2 — _collect_decb / write_code_decb)
+
+Finding 3 is the highest-value result of this session: it's exactly the
+kind of divergence that would NOT show up in a single simple test program
+(one ORG, one contiguous block) but WOULD show up the moment someone tests
+anything more realistic — multiple ORG statements, gaps, or an RMB run
+before the first real code. Worth a targeted test case specifically for
+this before trusting RAW-format output on anything but the simplest
+programs.
+
+--------------------------------------------------------------------------------
+NOT YET AUDITED — REMAINING SCOPE
+--------------------------------------------------------------------------------
+Within output.c (fetched, partially reviewed):
+  - write_code_BASIC, write_code_os9, write_code_hex, write_code_srec,
+    write_code_ihex, write_code_obj (+ its sbadd/expraux/auxsym helpers),
+    write_code_lwmod, write_code_dragon, write_code_abs — none of these
+    were diffed against Python, though Finding 4 already establishes that
+    NONE of them have a Python implementation to diff against yet (all
+    raise NotImplementedError). Worth revisiting in full once/if any of
+    these formats get implemented.
+
+Still outstanding from earlier sessions (unchanged from Session 5's list):
+  - lwasm/input.c        vs cocotools/input_system.py
+  - lwasm/list.c         vs cocotools/listing.py
+  - lwasm/macro.c        vs cocotools/ — still no Python file exists
+  - Session 3's open reachability question (register_symbol, cl=NULL)
+  - Full coverage of insn_funcs.py beyond rlist (Session 1 sampled only)
+  - Full coverage of lw_expr.py beyond the sections sampled in Session 2
+  - Full coverage of pseudo.py's non-stub, non-IF-family functions
+  - lwasm_core.py beyond the symbol-table section (Session 3)
+
+Per the plan agreed: input.c/list.c/macro.c are next (completing the
+"forward" pass), then back to Sessions 1-4's files for full-file coverage
+of everything not already deep-reviewed there.
+================================================================================

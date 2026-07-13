@@ -1,0 +1,184 @@
+================================================================================
+lwasm TRANSLATION AUDIT — SESSION 1
+================================================================================
+Repo audited:     https://github.com/erroneus0-ops/SuperComm-disassembled
+Component:        cocotools (Python translation of lwasm, LWTools 4.24)
+Files audited:    cocotools/instab.py
+                  cocotools/insn_funcs.py (rlist parser section only)
+C reference used: lwasm/instab.c, lwasm/instab.h, lwasm/insn_rlist.c, lwasm/lwasm.h
+C source location: github.com/stahta01/LWTools (master branch mirror)
+                  NOTE: the canonical Mercurial host (lwtools.ca) was not
+                  reachable from my tools this session. Per DESIGN.md's own
+                  note that "the lwasm assembler core... has not had
+                  behavioral changes since 4.24," the master-branch mirror
+                  should be equivalent for the sections checked below — this
+                  is an assumption, not a certainty, and should be confirmed
+                  against the real tagged changeset (0baeffe2747f) when
+                  possible.
+Date of session:  2026-07-13
+Auditor:          Claude (read-only audit per AUDIT_BRIEFING.md)
+
+--------------------------------------------------------------------------------
+FINDING 1
+--------------------------------------------------------------------------------
+FILE:      cocotools/instab.py
+C SOURCE:  lwasm/instab.c
+ISSUE:     10 mnemonics present in the real lwasm instruction table are
+           completely absent from the Python translation. Assembling source
+           that uses them would fail with "unknown instruction" in cocotools
+           but succeed in real lwasm.
+SEVERITY:  Critical
+EVIDENCE:  Missing mnemonics: asrq, clrq, comq, lsle, lslf, lslq, lsrq, nege,
+           negf, negw.
+           All are valid 6309 "convenience" instructions (insn_parse_conv,
+           flag lwasm_insn_is6309conv) built from real 6309 opcode
+           sequences, e.g. C has:
+             { "negw", { 0x1032, 0xc6, -1, 4 }, insn_parse_conv, ... }
+           with no equivalent anywhere in instab.py.
+
+--------------------------------------------------------------------------------
+FINDING 2
+--------------------------------------------------------------------------------
+FILE:      cocotools/instab.py
+C SOURCE:  lwasm/instab.c
+ISSUE:     7 mnemonics (asrd, clrd, comd, lsld, lsrd, negd, tstd) legitimately
+           appear TWICE in the C table:
+             (a) as an is6809conv synthesized macro — usable in plain 6809
+                 mode, no 6309 pragma needed, encoded as two packed real-6809
+                 opcodes, and
+             (b) as the real native is6309 hardware inherent opcode.
+           The Python translation keeps only the is6309 hardware-opcode
+           entry (b) for each and drops the is6809conv entry (a) entirely.
+SEVERITY:  Critical
+EVIDENCE:  C:
+             { "asrd", {0x4756,-1,-1,4}, insn_parse_conv, ...,
+               lwasm_insn_is6809conv }
+             { "asrd", {0x1047,-1,-1,-1}, insn_parse_inh, ...,
+               lwasm_insn_is6309 }
+           Python (instab.py line 264):
+             _I('asrd', [0x1047,-1,-1,-1], I9, inh)   <- only entry (b) kept
+           CONSEQUENCE: assembling ASRD (or the other 6 mnemonics) in plain
+           6809 mode — a completely valid lwasm program with no 6309 pragma
+           — would either be rejected as requiring 6309, or (if the pragma
+           isn't strictly gated elsewhere) would emit the real 6309-only
+           opcode 0x1047, which is invalid on real 6809 hardware. Either
+           outcome is wrong for a project whose target is the CoCo's 6809.
+ROOT CAUSE (likely):
+           INSTAB_BY_NAME is built as a flat Python dict
+           (INSTAB_BY_NAME[_e2.opcode.upper()] = _e2) during list
+           construction — this structurally cannot hold two entries for the
+           same mnemonic, silently keeping only the last one written. The C
+           array's "duplicate mnemonic, disambiguated by active pragma at
+           lookup time" mechanism has no equivalent in the Python data
+           structure at all. This is not a one-off bug in a single entry;
+           it is a systemic architecture gap for every overloaded mnemonic
+           in the table. Findings 1 and 2 share this root cause.
+
+--------------------------------------------------------------------------------
+FINDING 3
+--------------------------------------------------------------------------------
+FILE:      cocotools/instab.py
+ISSUE:     'phase' and 'dephase' pseudo-ops exist in the Python table with
+           no equivalent anywhere in the real lwasm source.
+SEVERITY:  Significant
+EVIDENCE:  grep -i "phase" against both instab.c and pseudo.c (real lwasm
+           source) returns nothing. Neither DESIGN.md nor
+           CLAUDE_MANIFESTO.md documents this as an intentional addition.
+           Not a "wrong behavior" bug in the strict sense (there is no C
+           behavior to contradict), but it breaks the stated project goal
+           of the translation being drop-in compatible with real lwasm —
+           code written using PHASE/DEPHASE in cocotools will not assemble
+           under real lwasm.
+
+--------------------------------------------------------------------------------
+FINDING 4 (POSITIVE — VERIFIED CORRECT)
+--------------------------------------------------------------------------------
+FILE:      cocotools/insn_funcs.py (rlist parser)
+C SOURCE:  lwasm/insn_rlist.c
+ISSUE:     None found. The previously reported PSHS D bug fix (documented
+           in AUDIT_BRIEFING.md / CLAUDE_MANIFESTO.md as fixed July 2026)
+           is verified correct against the real C source.
+SEVERITY:  N/A
+EVIDENCE:  Traced the full register-bit mapping logic line-by-line against
+           insn_rlist.c.
+           C:      if (rn==8) rn=6; else if (rn==9) rn=0x40; else rn=1<<rn;
+           Python: if rn==7: 0x80 / elif rn==8: 0x06 / elif rn==9: 0x40 /
+                   else: 1<<rn
+           These produce numerically identical results for every register:
+             - PC lands on 0x80 in both (special-case in Python vs. general
+               shift 1<<7 in C)
+             - D -> 0x06 in both
+             - U and S both correctly resolve to the shared bit-6 (0x40)
+               depending on PSHS/PULS vs PSHU/PULU context
+           The context-dependent "can't push a stack pointer onto itself"
+           guard is also correctly reproduced in both.
+           _oplen() in Python matches the OPLEN macro (lwasm.h:497) exactly:
+           both are "2 if opcode > 0xFF else 1".
+           CONCLUSION: this part of the fix holds up under re-verification.
+
+--------------------------------------------------------------------------------
+FINDING 5
+--------------------------------------------------------------------------------
+FILE:      cocotools/insn_funcs.py (rlist parser)
+C SOURCE:  lwasm/insn_rlist.c
+ISSUE:     Python's insn_parse_rlist has an extra branch not present in the
+           C function — if the operand starts with '#', it silently
+           delegates to insn_parse_imm8 instead of parsing a register list.
+SEVERITY:  Minor/Significant (unclear without more context — flagging for
+           human judgment rather than asserting it's wrong)
+EVIDENCE:  Python:
+             if p.peek() == '#':
+                 insn_parse_imm8(as_, cl, operand)
+                 cl.lint = 1
+                 return p.remaining()
+           has no counterpart in insn_rlist.c, which only ever runs the
+           register-lookup loop. In real lwasm, "PSHS #something" would
+           fail with E_REGISTER_BAD (since '#' isn't a valid register
+           token); in cocotools it is silently accepted as an immediate
+           byte. Reason for this addition is not yet known — possibly
+           intended to route some other mnemonic through the same table
+           entry. Have not yet traced where cl.lint is consumed elsewhere
+           in the codebase.
+
+--------------------------------------------------------------------------------
+SUMMARY — SESSION 1
+--------------------------------------------------------------------------------
+Critical findings:    2  (Findings 1 and 2 — same root cause: flat dict
+                          cannot represent pragma-dependent duplicate
+                          mnemonic entries)
+Significant findings: 1  (Finding 3 — undocumented PHASE/DEPHASE addition)
+Unclear/minor:        1  (Finding 5 — needs human input on intent)
+Verified correct:     1  (Finding 4 — PSHS D fix holds up)
+
+OPEN QUESTION FOR NEXT SESSION:
+The dict-collision root cause identified in Finding 2 likely affects other
+overloaded mnemonics beyond the 7 checked here — only the ones visibly
+duplicated near the top of the C table were checked directly. A full
+systematic check for every mnemonic that appears more than once anywhere
+in instab.c has not yet been run against the complete Python table (only
+a name-presence diff was done, which would not catch duplicates unless
+compared by count — this WAS done and returned exactly the 7 found in
+Finding 2, so that check is complete: 7 confirmed duplicate-dispatch
+mismatches, 10 total absent mnemonics, 2 extra Python-only mnemonics).
+
+NOT YET AUDITED THIS SESSION:
+  cocotools/lw_expr.py    vs lwasm/expr.c
+  cocotools/lwasm_core.py vs lwasm/lwasm.c, lwasm.h
+  cocotools/passes.py     vs lwasm/passes.c (or pass2.c..pass6.c)
+  cocotools/pass1.py      vs lwasm/pass1.c
+  cocotools/pseudo.py     vs lwasm/pseudo.c
+  cocotools/input_system.py vs lwasm/input.c
+  cocotools/listing.py    vs lwasm/list.c
+  cocotools/insn_funcs.py — remaining sections (gen8/16/32, indexed,
+    rel8/16, rtor, logicmem, bitbit, tfm, conv) not yet checked line-by-line
+    against their C counterparts; only the rlist section was audited this
+    session.
+
+Also noted (documentation currency, not a translation bug):
+  DESIGN.md and CLAUDE_MANIFESTO.md both describe lwasm.py as a single-file
+  STUB awaiting translation. The actual repo has since split this into
+  pass1.py, passes.py, pseudo.py, insn_funcs.py, lwasm_core.py,
+  lwasm_types.py, input_system.py, and listing.py — the old lwasm.py stub
+  file still exists alongside these. Both docs appear to predate this
+  refactor.
+================================================================================

@@ -1,0 +1,193 @@
+================================================================================
+lwasm TRANSLATION AUDIT — SESSION 7
+================================================================================
+Repo audited:     https://github.com/erroneus0-ops/SuperComm-disassembled
+Component:        cocotools (Python translation of lwasm, LWTools 4.24)
+File audited:     cocotools/input_system.py (full — all methods reviewed)
+C reference used: lwasm/input.c (full, 582 lines)
+C source location: github.com/stahta01/LWTools (master branch mirror) —
+                  same caveat as prior sessions re: canonical host.
+Date of session:  2026-07-13
+Auditor:          Claude (read-only audit per AUDIT_BRIEFING.md)
+
+--------------------------------------------------------------------------------
+FINDING 1 (POSITIVE — VERIFIED CORRECT)
+--------------------------------------------------------------------------------
+FILE:      cocotools/input_system.py  (readline / _readline_file /
+           _readline_string)
+C SOURCE:  lwasm/input.c  (input_readline)
+ISSUE:     None. This is a careful, correct translation of genuinely
+           fiddly logic.
+SEVERITY:  N/A
+EVIDENCE:  Checked line-by-line:
+             - CR, LF, CRLF, and LFCR line-ending handling all match
+               exactly (peek-ahead-and-consume-if-complementary, push back
+               otherwise).
+             - The 2048-character line-length cap matches exactly
+               (C: linebuff[2049] with a < 2048 store guard; Python:
+               MAX_LINE = 2048 with the same guard) — lines longer than
+               this are silently truncated in BOTH implementations
+               (matches C's behavior, including the silence).
+             - EOF-with-partial-buffer vs EOF-with-empty-buffer distinction
+               (return the partial final line vs. signal exhaustion and
+               pop to the next input source) matches exactly.
+             - Files are correctly opened in binary mode ('rb'), which is
+               required for Python's fh.seek(-1, 1) pushback trick to be
+               safe and byte-exact (confirmed by checking the open()
+               method) — this is the correct way to adapt C's ungetc() to
+               Python's file API, not a shortcut that happens to work.
+
+--------------------------------------------------------------------------------
+FINDING 2
+--------------------------------------------------------------------------------
+FILE:      cocotools/input_system.py  (open)
+C SOURCE:  lwasm/input.c  (input_open, prefix-determination section)
+ISSUE:     When an input specifier contains a colon but the text before it
+           is neither "include" nor "file" (or the colon is the very first
+           character, i.e. an empty prefix), real lwasm raises an explicit
+           error. Python silently falls through to treating the ENTIRE
+           original string — prefix, colon, and all — as a literal
+           filename.
+SEVERITY:  Minor (narrow edge case — malformed or unrecognized prefixes
+           are unlikely to occur in normal use — but a real, demonstrable
+           behavioral difference)
+EVIDENCE:  C:
+             for (s2 = s; *s2 && (*s2 != ':'); s2++) ;
+             if (input_isabsolute(s) || !*s2)
+                 t -> type = input_type_file;
+             else {
+                 ts = lw_strndup(s, s2 - s);
+                 if (!strcmp(ts, "include")) type = input_type_include;
+                 else if (!strcmp(ts, "file")) type = input_type_file;
+                 else type = input_type_error;   // <- explicit error type
+             }
+           input_type_error is not handled by either switch case in
+           input_open, so execution falls through to:
+             lw_error("Cannot figure out how to open '%s'.\n", ...);
+           — a hard, explicit, clearly-worded error.
+
+           Python:
+             if not _is_absolute(s):
+                 colon = s.find(':')
+                 if colon > 0:              # <- note: strictly > 0
+                     prefix = s[:colon]
+                     if prefix == 'include': ...
+                     elif prefix == 'file': ...
+                     # no else branch — input_type stays at its default
+                     # (INPUT_TYPE_FILE) and path stays as the full
+                     # original string, unprefixed-and-uncolon-stripped
+           Two related divergences from this:
+             (a) colon == 0 (string starts with ':') — C computes an
+                 empty-string prefix and correctly falls to
+                 input_type_error; Python's "colon > 0" check treats
+                 colon==0 the same as "no colon found," silently defaulting
+                 to file type with the leading colon kept as part of the
+                 filename.
+             (b) colon > 0 but prefix text doesn't match "include" or
+                 "file" — C: input_type_error → hard error. Python: silent
+                 fallthrough to file type using the whole original string
+                 (prefix + colon included) as the filename, which will
+                 most likely just fail to open with a generic OS-level
+                 "file not found" error rather than lwasm's specific,
+                 clearer diagnostic.
+CONSEQUENCE: mostly a difference in ERROR QUALITY/CLARITY rather than
+           silently wrong output (a genuinely malformed input spec will
+           still fail to assemble either way, just with a less specific
+           error message from cocotools). Flagging for completeness per
+           the "let's be complete" directive, but this is lower priority
+           than findings that produce silently different correct-looking
+           output.
+
+--------------------------------------------------------------------------------
+FINDING 3
+--------------------------------------------------------------------------------
+FILE:      cocotools/input_system.py  (open, INPUT_TYPE_INCLUDE branch)
+C SOURCE:  lwasm/input.c  (input_open, input_type_include case)
+ISSUE:     Real lwasm has a distinct, explicit code path for an ABSOLUTE
+           path given after an "include:" prefix (e.g.
+           "include:/full/path/to/file.asm") — it opens that path directly
+           and, if it fails, checks a specific "ignore this error"
+           condition (IGNOREERROR, defined as "file not found AND we're in
+           dependency-generation/preprocess mode") before deciding whether
+           to hard-error or just set a soft as->fileerr flag and continue.
+           Python has no equivalent explicit branch, no equivalent
+           IGNOREERROR condition anywhere in this file, and no code path
+           that ever sets self.fileerr (it's initialized in AsmState but
+           never assigned afterward, confirmed by search).
+SEVERITY:  Significant (specifically for anyone using or wanting to use a
+           dependency-listing / "don't fail on missing includes" mode —
+           otherwise low impact, since path RESOLUTION for the common case
+           happens to still work, see below)
+EVIDENCE:  C (lwasm.h): #define IGNOREERROR (errno == ENOENT &&
+           (as->preprocess || as->flags & FLAG_DEPENDNOERR))
+           — this is specifically lwasm's "-M"-style dependency-generation
+           support: when just listing what files a source depends on,
+           missing include files shouldn't be fatal.
+           cocotools DOES have the corresponding state fields
+           (AsmState.preprocess, FLAG_DEPENDNOERR constant in
+           lwasm_types.py) but they are not wired into any error-handling
+           logic in input_system.py — confirmed via search, no
+           IGNOREERROR-equivalent condition or self.fileerr assignment
+           exists anywhere in the file.
+ACCIDENTAL PARTIAL BEHAVIOR MATCH: Python's open() doesn't special-case
+           absolute paths within the include branch at all — it just does
+           os.path.join(cur_dir, path) and, if that fails,
+           os.path.join(inc_dir, path) for each entry in include_list.
+           Because Python's os.path.join silently discards all earlier
+           components whenever a later component is itself an absolute
+           path, os.path.join(anything, "/abs/path.asm") always evaluates
+           to exactly "/abs/path.asm" — so path RESOLUTION for an absolute
+           include target happens to land on the same file C would open,
+           purely as a side effect of os.path.join's documented behavior,
+           not because Python deliberately replicated C's explicit
+           absolute-path branch.
+           What does NOT match: if that absolute path fails to open,
+           Python retries the exact same (unchanged) absolute path once
+           per entry in include_list (a harmless but pointless retry
+           loop), then raises a hard IOError unconditionally — with no
+           equivalent of C's IGNOREERROR graceful-continuation option.
+CONSEQUENCE: for ordinary assembly (no dependency-generation mode in use),
+           this likely doesn't matter — resolution of a working absolute
+           include path succeeds the same way either side. It only
+           surfaces if (a) a dependency-generation/preprocess-only mode is
+           ever wanted for cocotools (currently there's no evidence this
+           mode is wired up anywhere, so may be moot), or (b) someone
+           relies on assembly continuing gracefully past a missing
+           absolute include in that mode specifically.
+
+--------------------------------------------------------------------------------
+SUMMARY — SESSION 7
+--------------------------------------------------------------------------------
+Critical findings:    0
+Significant findings: 1  (Finding 3 — IGNOREERROR/fileerr graceful-
+                          continuation entirely unwired; relevant mainly to
+                          a dependency-generation mode that doesn't appear
+                          to be implemented elsewhere either)
+Minor findings:       1  (Finding 2 — malformed-prefix handling differs in
+                          error quality, not in whether assembly ultimately
+                          fails)
+Verified correct:     1  (Finding 1 — readline/line-ending/length-cap
+                          logic, the highest-risk part of this file, is a
+                          careful and correct translation)
+
+This file overall reads as good-quality work, on the same end of the
+spectrum as Session 3's symbol-table findings rather than Sessions 1/2/6's
+sharper bugs — the one real gap (Finding 3) is about a peripheral feature
+(dependency-mode error tolerance) rather than core assembly correctness.
+
+--------------------------------------------------------------------------------
+NOT YET AUDITED — REMAINING SCOPE
+--------------------------------------------------------------------------------
+  - lwasm/list.c         vs cocotools/listing.py           <- next session
+  - lwasm/macro.c        vs cocotools/ — still no Python file exists
+  - lwasm/output.c's 9 unimplemented format writers (no Python to diff yet)
+  - Session 3's open reachability question (register_symbol, cl=NULL)
+  - Full coverage of insn_funcs.py beyond rlist (Session 1)
+  - Full coverage of lw_expr.py beyond the sections sampled in Session 2
+  - Full coverage of pseudo.py's non-stub, non-IF-family functions
+  - lwasm_core.py beyond the symbol-table section (Session 3)
+
+Per the agreed plan: listing.py next, then macro.c's scope, then back to
+close out full-file coverage on Sessions 1-4's files (excluding sections
+already deep-reviewed there).
+================================================================================

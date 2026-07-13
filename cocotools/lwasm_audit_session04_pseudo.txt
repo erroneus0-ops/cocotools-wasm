@@ -1,0 +1,164 @@
+================================================================================
+lwasm TRANSLATION AUDIT — SESSION 4
+================================================================================
+Repo audited:     https://github.com/erroneus0-ops/SuperComm-disassembled
+Component:        cocotools (Python translation of lwasm, LWTools 4.24)
+File audited:     cocotools/pseudo.py (directive parse/resolve/emit
+                  functions), with cross-reference to pass1.py for macro
+                  dispatch
+C reference used: lwasm/pseudo.c, lwasm/lwasm.h (error code enum)
+C source location: github.com/stahta01/LWTools (master branch mirror) —
+                  same caveat as prior sessions re: canonical host.
+Date of session:  2026-07-13
+Auditor:          Claude (read-only audit per AUDIT_BRIEFING.md)
+
+NOTE ON CHARACTER OF THIS SESSION'S FINDINGS: unlike Sessions 1 and 2,
+which found SILENT divergences from C behavior, this session's main
+finding is an openly self-documented gap — the relevant code has a comment
+header reading "Stubs for features deferred to later translation passes."
+This is not hidden or deceptive. It IS, however, more extensive than the
+top-level project docs (DESIGN.md, CLAUDE_MANIFESTO.md) currently capture,
+and worth recording precisely so it doesn't get lost as the project
+continues — hence this report.
+
+--------------------------------------------------------------------------------
+FINDING 1
+--------------------------------------------------------------------------------
+FILE:      cocotools/pseudo.py
+C SOURCE:  lwasm/pseudo.c
+ISSUE:     INCLUDEBIN — a real, functioning lwasm pseudo-op that includes
+           the contents of a raw binary file at assembly time — is present
+           in the Python instruction table (instab.py) and dispatches
+           successfully, but its parse/resolve/emit functions are all
+           no-op stubs. Custom error codes were added specifically for its
+           error cases (E_INCLUDEBIN_ILL_START, E_INCLUDEBIN_ILL_LENGTH)
+           but are never actually raised, since the parse stub never
+           reaches the code that would check start/length validity.
+SEVERITY:  Critical (in terms of practical impact — this is a commonly
+           used directive, e.g. for embedding graphics/sound data — even
+           though it's openly marked incomplete rather than silently
+           wrong)
+EVIDENCE:  C: pseudo.c defines real pseudo_parse_includebin (line 1464) and
+           pseudo_emit_includebin (line 1513) with actual file-reading
+           logic and start/length validation.
+           Python:
+             def pseudo_parse_includebin(as_, cl, operand):
+                 return _stub_parse(as_, cl, operand)
+             def pseudo_resolve_includebin(as_, cl, force):  pass
+             def pseudo_emit_includebin(as_, cl):            pass
+           where _stub_parse is:
+             def _stub_parse(as_, cl, operand):
+                 cl.len = 0; return ''
+           CONSEQUENCE: source using INCLUDEBIN "file.bin" would assemble
+           without any error message, but the included binary data would
+           simply be absent from the output (cl.len = 0 means the
+           assembler thinks this line contributes zero bytes). This is
+           worse than an error in one specific sense: it's silent from the
+           tool's point of view, even though the code itself is honestly
+           labeled — the risk is entirely on the human not noticing the
+           output is short the expected bytes.
+
+--------------------------------------------------------------------------------
+FINDING 2
+--------------------------------------------------------------------------------
+FILE:      cocotools/pseudo.py (and cocotools/pass1.py, which references a
+           cocotools/macro.py module that does not exist in the repo)
+C SOURCE:  lwasm/pseudo.c
+ISSUE:     Full inventory of pseudo-ops that are present in the instruction
+           table and dispatch successfully, but whose parse/resolve/emit
+           functions are all no-op stubs:
+             MACRO / ENDM           (macro DEFINITION)
+             SECTION / ENDSECT
+             STRUCT / ENDS
+             EXTERN / EXPORT / EXTDEP
+             PRAGMA / *PRAGMA / *PRAGMAPUSH / *PRAGMAPOP
+             REORG
+             OS9
+             MOD / EMOD             (OS-9 module boundaries)
+             INCLUDEBIN / INCLUDESTR (see Finding 1)
+             SETSTR
+             IFPRAGMA / IFSTR
+SEVERITY:  Significant (transparently documented, but broader in scope
+           than DESIGN.md/CLAUDE_MANIFESTO.md currently record)
+EVIDENCE:  Each function above is defined exactly once in pseudo.py, as:
+             def pseudo_parse_XXX(as_, cl, operand): return _stub_parse(...)
+           with no later override anywhere in the file (confirmed via
+           definition-count check). Additionally, pass1.py's own header
+           comment states macro EXPANSION (not just definition) is
+           "deferred to macro.py" via as_.expand_macro(cl, sym) and
+           as_.add_macro_line(line) — but no macro.py file exists in the
+           repo (confirmed 404 on cocotools/macro.py). So macro support is
+           incomplete on both the definition side (MACRO/ENDM stubbed) and
+           the invocation side (the module that would expand a macro call
+           doesn't exist yet).
+IMPORTANT CROSS-REFERENCE TO SESSION 3: Session 3 verified the pragma-
+           checking logic (curpragma(), the PRAGMA_* bit tests throughout
+           the codebase) is faithfully translated and correct. This
+           session's finding means the PRAGMA pseudo-op itself — the thing
+           that would actually let assembly source SET those pragma bits —
+           doesn't yet do anything. So the correctness verified in Session
+           3 currently has limited practical reach: pragmas can only be at
+           whatever their default/initial state is, since there's no
+           working directive to change them from source. (I have not
+           checked whether pragmas can be set via a command-line-flag
+           equivalent in cocotools, which would be a separate path not
+           going through this stub — flagging as an open question.)
+
+--------------------------------------------------------------------------------
+FINDING 3 (POSITIVE — VERIFIED CORRECT, TIES TO SESSION 2)
+--------------------------------------------------------------------------------
+FILE:      cocotools/pseudo.py  (pseudo_parse_ifeq and siblings)
+C SOURCE:  lwasm/pseudo.c  (pseudo_parse_ifeq and siblings)
+ISSUE:     None found. Confirms and closes out a question raised in
+           Session 2.
+SEVERITY:  N/A
+EVIDENCE:  pseudo_parse_ifeq:
+             e = as_.parse_cond(p)
+             if e: as_.reduce_expr(e)
+             if e and e.intval() != 0:
+                 as_.skipcond = 1; as_.skipcount = 1
+           This parses a single plain arithmetic expression (via the
+           normal lw_expr grammar) and does the equality test as a
+           separate post-hoc step, exactly matching the real C design
+           (lwasm_parse_cond + a comparison done in the pseudo-op handler,
+           NOT via a comparison operator inside the expression grammar).
+           This confirms Session 2 Finding 2's six invented comparison
+           operators (==, !=, <, <=, >, >=) in lw_expr.py's grammar are not
+           used anywhere by the IF-family conditionals — they appear to be
+           a pure, unconsumed addition with no internal caller found so
+           far, reinforcing that they should likely just be removed rather
+           than needing any consumer to be preserved.
+
+--------------------------------------------------------------------------------
+SUMMARY — SESSION 4
+--------------------------------------------------------------------------------
+Critical findings:    1  (Finding 1 — INCLUDEBIN silently produces
+                          zero-byte output for a real, commonly-used
+                          directive)
+Significant findings: 1  (Finding 2 — 12+ pseudo-ops openly stubbed,
+                          broader than top-level docs currently capture;
+                          includes macro definition AND expansion both
+                          being incomplete)
+Verified correct:     1  (Finding 3 — IF-family conditionals correctly
+                          avoid relying on the invented comparison
+                          operators from Session 2)
+
+RECOMMENDATION FOR PROJECT TRACKING (not a code change, just a suggestion):
+Given how much is stubbed under pseudo.py specifically, it may be worth
+adding a per-directive status table to DESIGN.md (implemented / stub /
+not started) rather than the current single "STUB" label covering the
+whole former lwasm.py — the file has clearly progressed well past that
+coarse status, and the granular picture is useful for anyone (including a
+future Claude session) trying to figure out what's safe to test against
+real lwasm output right now versus what will predictably fail.
+
+NOT YET AUDITED THIS SESSION:
+  - The pseudo-ops in pseudo.py that DO have real implementations (ORG,
+    RMB, FCB/FDB/FCC family, END, EQU/SET, IFDEF/IFNDEF/IFP1, etc.) were
+    not line-by-line diffed against pseudo.c this session — only the
+    IF-family (Finding 3) was checked in depth, plus the stub inventory.
+  - passes.py vs the pass2-6 C sources
+  - input_system.py vs input.c
+  - listing.py vs list.c
+  - Reachability question left open from Session 3 (Finding 2 there)
+================================================================================

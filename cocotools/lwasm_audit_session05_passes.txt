@@ -1,0 +1,255 @@
+================================================================================
+lwasm TRANSLATION AUDIT — SESSION 5
+================================================================================
+Repo audited:     https://github.com/erroneus0-ops/SuperComm-disassembled
+Component:        cocotools (Python translation of lwasm, LWTools 4.24)
+File audited:     cocotools/passes.py (do_pass2 through do_pass6; do_pass7,
+                  do_output, and the DECB/raw byte-collection helpers were
+                  NOT covered this session — see "not yet audited")
+C reference used: lwasm/pass2.c, pass3.c, pass4.c, pass5.c, pass6.c
+C source location: github.com/stahta01/LWTools (master branch mirror) —
+                  same caveat as prior sessions re: canonical host.
+Date of session:  2026-07-13
+Auditor:          Claude (read-only audit per AUDIT_BRIEFING.md)
+
+CONTEXT: this session was requested as a shift toward full-file, complete
+coverage rather than sampling representative sections. Note up front: full
+completeness across the whole codebase is a multi-session undertaking —
+this session covers five specific C files (pass2-pass6, ~540 lines
+combined) in full, line-by-line. pass7.c, output.c, input.c, list.c, and
+macro.c (another ~2700 lines combined) were fetched but not yet diffed —
+see the closing section for exactly what's left.
+
+--------------------------------------------------------------------------------
+FINDING 1 (POSITIVE — VERIFIED CORRECT)
+--------------------------------------------------------------------------------
+FILE:      cocotools/passes.py  (do_pass2)
+C SOURCE:  lwasm/pass2.c  (do_pass2)
+ISSUE:     None. Full line-by-line match, including the OBJ-target export-
+           list verification/auto-import logic and the badsymerr flag set.
+SEVERITY:  N/A
+
+--------------------------------------------------------------------------------
+FINDING 2 (POSITIVE — VERIFIED CORRECT, ONE BENIGN NOTE)
+--------------------------------------------------------------------------------
+FILE:      cocotools/passes.py  (do_pass3)
+C SOURCE:  lwasm/pass3.c  (do_pass3)
+ISSUE:     None behaviorally. Loop-until-stable structure, the len/dlen
+           cross-synchronization logic gated on cl.inmod==0, and the rc-
+           counter stopping condition all match exactly.
+SEVERITY:  N/A
+NOTE:      Python adds a bounds check (cl.insn < len(INSTAB)) before array
+           access that C does not have (C trusts cl->insn is always in
+           range when >= 0). Consistent with a recurring pattern across
+           this codebase of Python adding defensive guards C doesn't have
+           — see Finding 3 for why this pattern is worth tracking rather
+           than dismissing case-by-case.
+
+--------------------------------------------------------------------------------
+FINDING 3
+--------------------------------------------------------------------------------
+FILE:      cocotools/passes.py  (_do_pass4_aux)
+C SOURCE:  lwasm/pass4.c  (do_pass4_aux)
+ISSUE:     Python adds "if sl is None: break" when the cursor runs off the
+           end of the line list while searching for the next unresolved
+           instruction. C has no equivalent check at this point — if this
+           path were ever reached in C, it would dereference sl->addr on a
+           NULL pointer (a crash).
+SEVERITY:  Significant (uncertain reachability, but the failure MODE
+           differs meaningfully if it is reachable)
+EVIDENCE:  C:
+             for ( ; sl && sl -> len != -1; sl = sl -> next) { ... }
+             // no NULL check here before:
+             as -> cl = sl;
+             lwasm_reduce_expr(as, sl -> addr);   // crashes if sl==NULL
+           Python:
+             while sl and sl.len != -1: ...
+             if sl is None:
+                 break                              # <- returns quietly
+             ...
+ANALYSIS:  Under correct invariants (cnt accurately reflects the number of
+           still-unresolved lines reachable by continuing to scan forward
+           from sl's current position), this path should be unreachable —
+           if cnt > 0, there should always be at least one more line with
+           len == -1 still ahead of sl. I have NOT proven this invariant
+           holds in all cases (it depends on pass3's behavior and on
+           nothing upstream ever double-counting or mis-counting cnt).
+           IF the invariant ever breaks (due to some other bug, including
+           possibly one not yet found in this audit), the two
+           implementations fail differently in a way that matters:
+             - Real lwasm: crashes immediately. Loud, obvious, gets
+               investigated right away.
+             - cocotools: silently breaks out of the loop and returns.
+               do_pass4 (force=1) returns normally with cnt still > 0 —
+               meaning there ARE unresolved instructions — but no
+               E_INSTRUCTION_FAILED error was ever raised for them, and
+               nothing downstream in this function reports the problem.
+           This is the same "defensive guard changes the failure mode from
+           loud-crash to silent-continue" pattern noted in Session 3
+           (Finding 2) and Finding 2 above. On its own any single instance
+           looks like reasonable defensive coding; as a repeated pattern
+           across the codebase it means: if there IS an invariant-breaking
+           bug anywhere upstream, cocotools is structurally more likely to
+           mask it (silent wrong output) rather than surface it (crash),
+           compared to real lwasm. Worth deciding as a deliberate policy
+           (e.g., these guards should assert-and-report rather than
+           silently break) rather than leaving each one as an ad hoc
+           choice.
+
+--------------------------------------------------------------------------------
+FINDING 4 — HIGH VALUE
+--------------------------------------------------------------------------------
+FILE:      cocotools/passes.py  (do_pass5)
+C SOURCE:  lwasm/pass5.c  (do_pass5)
+ISSUE:     The real lwasm C source itself appears to contain a genuine bug
+           in this function — and the Python translation faithfully
+           reproduces HALF of that bug while silently correcting the other
+           half.
+SEVERITY:  Significant (this is about faithfulness-of-translation policy,
+           not really about "is the Python correct" — see analysis)
+EVIDENCE:  C (pass5.c, the address-resolution recovery loop):
+             for (cl = sl; cl; cl = cl -> next)
+             {
+                 as -> cl = sl;
+                 lwasm_reduce_expr(as, sl -> addr);      // uses sl, not cl
+                 if (exprok(as, cl -> addr))              // checks cl->addr
+                 {
+                     if (0 == --cnt) return;
+                 }
+                 lwasm_reduce_expr(as, sl -> daddr);     // uses sl, not cl
+                 if (exprok(as, cl -> addr))              // BUG: checks
+                 {                                        // cl->addr AGAIN,
+                     if (0 == --cnt) return;               // not cl->daddr
+                 }
+             }
+           This loop advances cl but always reduces/checks against the
+           fixed sl (not the advancing cl) for BOTH sub-checks, and the
+           second sub-check tests cl->addr a second time instead of
+           cl->daddr. This looks like a copy-paste error in the original
+           lwtools source (checked visually multiple times against the
+           actual fetched file to rule out a transcription mistake on my
+           end — the text above is exactly what's in pass5.c).
+
+           Python (passes.py, do_pass5):
+             cl = sl
+             while cl:
+                 as_.cl = sl
+                 as_.reduce_expr(sl.addr)                 # matches C: uses sl
+                 if _exprok_p5(as_, cl.addr):              # matches C: cl.addr
+                     cnt -= 1
+                     if cnt == 0: return
+                 as_.reduce_expr(sl.daddr)                 # matches C: uses sl
+                 if _exprok_p5(as_, cl.daddr):              # DIFFERS FROM C:
+                     cnt -= 1                               # checks cl.daddr,
+                     if cnt == 0: return                     # not cl.addr again
+                 cl = cl.next
+
+ANALYSIS:  Python faithfully reproduces the "reduces sl instead of the
+           advancing cl" half of the bug, but silently corrects the
+           "checks addr twice instead of addr-then-daddr" half. This is
+           very likely an artifact of how the translation was done —
+           checking cl->addr twice in a row reads so obviously like a typo
+           that a human or AI translator naturally "fixes" it without
+           registering that as a deliberate policy decision, while the
+           sl-vs-cl substitution is less visually obvious as a mistake and
+           got carried over unchanged.
+           PRACTICAL CONSEQUENCE: for any source program that actually
+           exercises this recovery loop (i.e., has address expressions
+           that don't resolve during pass3/4 and need pass5's fallback
+           walk), the set of lines whose daddr gets checked/counted as
+           resolved will differ between cocotools and real lwasm, because
+           real lwasm never actually re-checks daddr here at all — it
+           checks addr twice and never notices if daddr specifically was
+           the unresolved piece. This could mean:
+             - cocotools correctly resolves and clears more lines per
+               iteration than real lwasm would (since it's actually
+               checking the right field), potentially finishing in fewer
+               iterations, and/or
+             - cocotools raises E_LINED_ADDRESS in different cases (or
+               fails to) compared to real lwasm, since real lwasm's
+               daddr-resolution tracking through this specific loop is
+               effectively broken and relies on other passes to have
+               already sorted daddr out.
+           This is squarely the kind of divergence the project's own
+           "faithful translation, bugs included" principle is meant to
+           catch — not because the Python is behaving badly (arguably it's
+           behaving BETTER), but because "better" here is still
+           "different from what real lwasm actually does," which
+           undermines exact round-trip verification against real lwasm
+           output for any test case that reaches this path.
+DECISION NEEDED (not mine to make): does the project want byte-exact
+           behavioral parity with real lwasm including this bug, or is
+           silently improving on a discovered upstream bug acceptable?
+           Either is defensible — but right now it happened by accident
+           rather than by decision, which is the actual issue.
+
+--------------------------------------------------------------------------------
+FINDING 5 (POSITIVE — VERIFIED CORRECT)
+--------------------------------------------------------------------------------
+FILE:      cocotools/passes.py  (do_pass6)
+C SOURCE:  lwasm/pass6.c  (do_pass6)
+ISSUE:     None. Simple flat double loop over lines/exprs, final reduce +
+           exprok check + E_EXPRESSION_BAD reporting — matches exactly.
+SEVERITY:  N/A
+NOTE:      Python wraps the error-message string formatting in a
+           try/except as a defensive measure around str(le.expr); this is
+           a reasonable Python-side safety net around message formatting,
+           not a behavioral divergence in the pass logic itself.
+
+--------------------------------------------------------------------------------
+SUMMARY — SESSION 5
+--------------------------------------------------------------------------------
+Critical findings:    0
+Significant findings: 2  (Finding 3 — silent-break-instead-of-crash pattern
+                          in pass4; Finding 4 — partial bug replication in
+                          pass5's recovery loop, a real behavioral
+                          divergence from actual lwasm for programs that
+                          exercise that path)
+Verified correct:     3  (do_pass2, do_pass3 core logic, do_pass6)
+
+Finding 4 in particular is worth prioritizing: it's concrete, precisely
+located, and would be directly testable — a small assembly program with a
+deliberately circular/late-resolving address expression (forcing pass5's
+recovery loop to run) should show cocotools and real lwasm disagreeing on
+either iteration count, which lines get flagged with E_LINE_ADDRESS /
+E_LINED_ADDRESS, or both. This is exactly the kind of test case DESIGN.md's
+verification strategy (diff against real lwasm binary output) would catch
+immediately, and would settle Finding 4 empirically rather than just by
+code reading.
+
+--------------------------------------------------------------------------------
+NOT YET AUDITED — REMAINING SCOPE FOR FULL COMPLETENESS
+--------------------------------------------------------------------------------
+Fetched this session but not yet diffed line-by-line:
+  - lwasm/pass7.c        (~75 lines)   vs cocotools/passes.py do_pass7
+  - lwasm/output.c       (~1362 lines) vs cocotools/passes.py do_output /
+                                          collect_decb_bytes / _collect_decb /
+                                          _collect_raw
+  - lwasm/input.c        (~582 lines)  vs cocotools/input_system.py
+  - lwasm/list.c         (~328 lines)  vs cocotools/listing.py
+  - lwasm/macro.c        (~350 lines)  vs cocotools/ — NO Python file exists
+                                          at all yet (confirmed Session 4);
+                                          this is 350 lines of C logic with
+                                          zero Python counterpart currently
+
+Also still outstanding from earlier sessions:
+  - Session 3's open reachability question (register_symbol with cl=NULL)
+  - Full line-by-line coverage of insn_funcs.py beyond the rlist section
+    (Session 1) — gen8/16/32, indexed addressing, rel8/16, tfm, logicmem,
+    bitbit, conv-instruction emit logic all remain unchecked
+  - Full line-by-line coverage of pseudo.py's non-stub, non-IF-family
+    functions (ORG, RMB, FCB/FDB/FCC, EQU/SET, END, etc.)
+  - lwasm_core.py beyond the symbol-table section (Session 3): the Line/
+    AsmState structures, emit helpers, reduce_expr itself (this is the
+    function that calls into lw_expr's simplify — worth checking given
+    Session 2's findings live inside what reduce_expr calls)
+
+Given the size of what remains (roughly 2700+ lines of C left just from
+this session's batch, plus the above), full completeness is realistically
+several more sessions of this depth. Continuing to work through this list
+in order unless you'd rather re-prioritize toward the empirical test-
+program approach for Finding 4, or toward closing out macro.c's total
+absence (arguably the largest single gap by functional impact, since
+programs that use MACRO/ENDM cannot be assembled by cocotools at all right
+now, regardless of any other findings).
+================================================================================

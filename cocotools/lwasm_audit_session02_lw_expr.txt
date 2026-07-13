@@ -1,0 +1,204 @@
+================================================================================
+lwasm TRANSLATION AUDIT — SESSION 2
+================================================================================
+Repo audited:     https://github.com/erroneus0-ops/SuperComm-disassembled
+Component:        cocotools (Python translation of lwasm, LWTools 4.24)
+File audited:     cocotools/lw_expr.py
+C reference used: lwlib/lw_expr.c, lwasm/pseudo.c (spot-check only)
+C source location: github.com/stahta01/LWTools (master branch mirror)
+                  Same caveat as Session 1: canonical Mercurial host not
+                  reachable; using GitHub mirror as stand-in per DESIGN.md's
+                  claim that lwasm core hasn't changed behaviorally since
+                  4.24.
+Verification method: Divide/modulo semantics were confirmed against
+                  ACTUALLY COMPILED C (gcc), not just reasoned about — see
+                  Finding 1 evidence.
+Date of session:  2026-07-13
+Auditor:          Claude (read-only audit per AUDIT_BRIEFING.md)
+
+--------------------------------------------------------------------------------
+FINDING 1
+--------------------------------------------------------------------------------
+FILE:      cocotools/lw_expr.py  (Expr._compute, OPER_MOD and OPER_INTDIV)
+C SOURCE:  lwlib/lw_expr.c  (lw_expr_simplify_go, lw_expr_oper_mod /
+           lw_expr_oper_intdiv cases)
+ISSUE:     The % (MOD) and \ (INTDIV) operators produce different numeric
+           results than real lwasm whenever the two operands have different
+           signs. This is a silent wrong-value bug, not a crash or parse
+           error — the assembler will produce different byte output for the
+           same valid source line with no warning.
+SEVERITY:  Critical
+EVIDENCE (verified against actually-compiled C, not simulated):
+           C (gcc, real integer division/modulo, truncates toward zero):
+             a=-7 b=2   a/b=-3   a%b=-1
+             a=7  b=-2  a/b=-3   a%b=1
+             a=-7 b=-2  a/b=3    a%b=-1
+             a=7  b=2   a/b=3    a%b=1
+           Python (native // and %, floors toward negative infinity):
+             a=-7 b=2   a//b=-4   a%b=1     <- both wrong vs C
+             a=7  b=-2  a//b=-4   a%b=-1    <- both wrong vs C
+             a=-7 b=-2  a//b=3    a%b=-1    <- happens to match (same sign)
+             a=7  b=2   a//b=3    a%b=1     <- happens to match (same sign)
+           C source (lw_expr.c):
+             case lw_expr_oper_mod:
+                 tr = E->operands->p->value % E->operands->next->p->value;
+             case lw_expr_oper_intdiv:
+                 tr = E->operands->p->value / E->operands->next->p->value;
+                 /* NOTE: intdiv in C is IDENTICAL to divide — both use
+                    C's truncating integer division. lwasm's "\" and "/"
+                    do the same thing. */
+           Python source (lw_expr.py, _compute):
+             if op == OPER_MOD:    return vals[0] % vals[1]      # floor-rem
+             if op == OPER_INTDIV: return vals[0] // vals[1]     # floor-div
+CONSEQUENCE: any assembly-time expression using % or \ where one operand
+           is negative (e.g. a computed offset that can go negative) will
+           assemble to a different constant in cocotools than in real
+           lwasm, with no error or warning either side. This is exactly the
+           class of bug the audit briefing calls out as highest priority
+           ("Control flow that produces different results than the C for
+           the same input").
+FIX DIRECTION (not applied — for the human to decide): Python's OPER_DIVIDE
+           already does this correctly via int(vals[0]/vals[1]) (truncates
+           toward zero, matching C, for the value ranges this assembler
+           handles). OPER_MOD and OPER_INTDIV should be derived from the
+           same truncating-division definition C uses (C defines %% as
+           a - (a/b)*b using truncating division), not from Python's native
+           // and %, which are floor-based.
+
+--------------------------------------------------------------------------------
+FINDING 2
+--------------------------------------------------------------------------------
+FILE:      cocotools/lw_expr.py  (_PARSE_OPERATORS table and Expr._compute)
+C SOURCE:  lwlib/lw_expr.c  (lw_expr_parse_expr operators[] table)
+ISSUE:     Six comparison operators (==, !=, <>, <, <=, >, >=) exist in the
+           Python expression parser and constant-folder that do not exist
+           ANYWHERE in the real lwasm expression grammar.
+SEVERITY:  Significant
+EVIDENCE:  C's lw_expr_parse_expr operators[] table (the only place infix
+           operators are recognized) contains exactly: + - * / % \ && ||
+           & | ! ^ (12 entries, terminated by lw_expr_oper_none). No eq/ne/
+           lt/le/gt/ge tokens exist in this table or anywhere else in
+           lw_expr.c — confirmed by grep across the whole file.
+           Python's _PARSE_OPERATORS adds:
+             (OPER_EQ, '==', 55), (OPER_NE, '!=', 55), (OPER_NE, '<>', 55),
+             (OPER_LT, '<', 60), (OPER_LE, '<=', 60), (OPER_GT, '>', 60),
+             (OPER_GE, '>=', 60)
+           and Expr._compute implements all six as constant-folding cases.
+           Cross-checked pseudo.c: pseudo_parse_ifeq (and, by extension,
+           the other IFxx pseudo-ops) call lwasm_parse_cond, which parses
+           a plain arithmetic expression via the SAME lw_expr grammar and
+           then does the equality/inequality test as a separate step
+           inside the pseudo-op handler — NOT via a comparison operator
+           inside the expression grammar itself. This confirms comparison
+           semantics in real lwasm live entirely outside lw_expr.c, at the
+           pseudo-op level, and were never meant to be general-purpose
+           infix operators usable in any expression context.
+CONSEQUENCE: source using <, >, ==, etc. as general expression operators
+           (e.g. inside an EQU, or as an operand to an instruction) will
+           successfully assemble under cocotools but be a parse error
+           under real lwasm — a direct violation of the project's stated
+           portability/round-trip goal, in the same category as the
+           PHASE/DEPHASE finding from Session 1 but touching arithmetic
+           expression syntax rather than a standalone directive.
+NOT FLAGGED AS A BUG: the '!' -> OPER_BWOR mapping. Real lwasm's C table
+           has an apparent quirk/bug of its own — { lw_expr_oper_bwor, "!",
+           50 } — mapping '!' to bitwise-OR rather than some form of NOT.
+           Python's table reproduces this exactly, WITH a comment noting
+           it's intentional ("# '!' is alias for '|' per C source"). This
+           is correct behavior per the project's "faithful translation,
+           bugs and all" philosophy — flagged here only as a positive
+           finding, not an issue.
+
+--------------------------------------------------------------------------------
+FINDING 3
+--------------------------------------------------------------------------------
+FILE:      cocotools/lw_expr.py  (Expr._compute, OPER_COM)
+C SOURCE:  lwlib/lw_expr.c  (lw_expr_oper_com case)
+ISSUE:     The 16-bit complement operator (~ or ^ prefix, when expr_width
+           != 8) masks its result to 0xFFFF immediately in Python; the C
+           source does not mask at that point at all, leaving the natural
+           (negative, sign-extended) C int value to propagate into further
+           arithmetic.
+SEVERITY:  Minor-to-Significant (uncertain net effect — see explanation)
+EVIDENCE:  C:      case lw_expr_oper_com: tr = ~(E->operands->p->value);
+                   /* no masking here */
+           Python: if op == OPER_COM: return ~vals[0] & 0xFFFF
+EXPLANATION: For pure arithmetic (+, -, *) built on top of a complement
+           result, this difference is provably invisible in the FINAL
+           output, because addition/subtraction/multiplication commute
+           with a modulo-65536 reduction applied at any intermediate step
+           — the final 16-bit truncation at emit time produces the same
+           byte pattern either way.
+           However, it is NOT provably invisible for operators sensitive to
+           sign rather than just magnitude mod 65536 — specifically the
+           comparison operators from Finding 2 (if those are ever used on a
+           complemented value) or any future operator that branches on
+           sign. Example: "~1 < 100" — C: ~1 = -2 (native negative int),
+           -2 < 100 is true. Python (per this file): (~1)&0xFFFF = 65534,
+           65534 < 100 is false. Opposite results.
+           This finding is somewhat entangled with Finding 2 (comparison
+           operators shouldn't exist in expressions at all per real lwasm)
+           — if Finding 2 is addressed by removing those operators from
+           general expression context, this finding's practical impact
+           drops close to zero. Flagging both because they compound each
+           other; worth revisiting together.
+
+--------------------------------------------------------------------------------
+FINDING 4 (POSITIVE — VERIFIED CORRECT)
+--------------------------------------------------------------------------------
+FILE:      cocotools/lw_expr.py  (Expr.simplify / _simplify_l / _simplify_go)
+C SOURCE:  lwlib/lw_expr.c  (lw_expr_simplify / lw_expr_simplify_l /
+           lw_expr_simplify_go)
+ISSUE:     None found. Anti-recursion depth-limit mechanism (bail out at
+           500 levels) is faithfully reproduced.
+SEVERITY:  N/A
+EVIDENCE:  C uses static globals `level`/`bailing` that persist across
+           calls (reset to 0 only implicitly, when level unwinds back to
+           0 after a balanced increment/decrement). Python's ctx object
+           explicitly resets `_level = 0` and `_bailing = False` at the
+           START of every top-level simplify() call, rather than relying
+           on the invariant that C's globals always return to 0 anyway.
+           This is a real structural difference (explicit reset vs.
+           implicit persistence) but NOT a behavioral one: the C code's
+           level/bailing counter is fully balanced on every normal
+           (non-crashing) code path — it always returns to exactly 0 by
+           the time a top-level call to lw_expr_simplify() returns, so
+           explicitly resetting it at that same point changes nothing
+           observable. Classified as a benign implementation-idiom
+           difference, not a translation error, per the audit's own
+           criteria ("Python idiom differences that produce identical
+           behavior" are explicitly out of scope for flagging).
+
+--------------------------------------------------------------------------------
+NOT YET CHECKED THIS SESSION
+--------------------------------------------------------------------------------
+  - The full like-term collection / distribution logic (lw_expr_simplify_go,
+    C lines ~800-1100) — only the constant-folding switch and the
+    depth-limit wrapper were checked line-by-line this session.
+  - lw_expr_compare, lw_expr_contains, lw_expr_copy — structural/equality
+    helpers, not yet diffed against C.
+  - The special/var evaluation callback contract (evaluate_special /
+    evaluate_var) — read but not exercised against real lwasm.c call sites
+    to confirm the callback signatures and expected return semantics match
+    exactly.
+
+--------------------------------------------------------------------------------
+SUMMARY — SESSION 2
+--------------------------------------------------------------------------------
+Critical findings:    1  (Finding 1 — MOD/INTDIV sign-dependent wrong values,
+                          confirmed against actually-compiled C)
+Significant findings: 1  (Finding 2 — six comparison operators added to the
+                          expression grammar that don't exist in real lwasm)
+Minor/uncertain:      1  (Finding 3 — COM masking difference, entangled
+                          with Finding 2)
+Verified correct:     1  (Finding 4 — recursion depth-limit mechanism)
+
+Note on Finding 1 in particular: this is the kind of bug that produces no
+error message on either side — cocotools and lwasm would each assemble the
+same source file successfully, just to different binary output, whenever
+% or \ is used with mixed-sign operands. Worth prioritizing given the
+project's stated verification strategy (byte-for-byte diff against a real
+lwasm reference binary) — a test program deliberately using % or \ with a
+negative operand would catch this immediately and is a good candidate for
+the verification test suite mentioned in DESIGN.md.
+================================================================================
