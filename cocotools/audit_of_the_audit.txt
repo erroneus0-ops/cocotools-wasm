@@ -1,0 +1,90 @@
+================================================================================
+AUDIT OF THE AUDIT -- what's actually still true, re-checked live against
+the current repo (not recited from memory), 2026-07-13
+================================================================================
+
+RESOLVED TODAY (verified fixed, not just claimed fixed):
+--------------------------------------------------------------------------------
+1. lw_expr.py MOD/INTDIV truncating-division bug -- FIXED, verified via
+   simplify() and against compiled C.
+2. passes.py _collect_raw address-indexed-vs-line-order algorithm bug --
+   FIXED, verified against leading-RMB and mid-gap test scenarios.
+3. insn_funcs.py TFM/logicmem/bitbit -- FIXED (real implementations, not
+   just longer stubs), verified end-to-end via the actual CLI producing
+   correct real 6309 opcode bytes (TFM=$113B, AIM=$02, BAND=$1130).
+4. cocotools/__init__.py exporting the wrong (dead, unaudited) assemble
+   function -- FIXED, verified `cocotools.assemble` now resolves to the
+   real pipeline.
+5. c_compat.py created and genuinely wired in (not just documented) --
+   lw_expr.py now imports Ptr and c_trunc_div from it rather than
+   defining separate copies; verified `Ptr` is object-identical across
+   both import paths.
+
+STILL OPEN -- re-verified live just now, confirmed still accurate:
+--------------------------------------------------------------------------------
+6. instab.py: all 10 missing 6309-conv mnemonics (asrq/clrq/comq/lsle/
+   lslf/lslq/lsrq/nege/negf/negw) confirmed STILL missing. All 7 dual-
+   dispatch mnemonics (asrd/clrd/comd/lsld/lsrd/negd/tstd) confirmed
+   STILL appearing only once each (one entry silently shadows the
+   other). Not touched today. Still the cleanest remaining "meat" item
+   if you want it next -- mechanical, not clever.
+7. lw_expr.py: the 6 orphaned comparison operators (OPER_EQ/NE/LT/LE/
+   GT/GE) confirmed STILL present and (as far as this audit determined)
+   still unused by anything real. Not touched today. Low-effort removal
+   if you want the grammar to match real lwasm exactly.
+8. pseudo.py: stub count confirmed STILL 23 references to `_stub_parse`
+   -- MACRO/ENDM, SECTION/ENDSECT, STRUCT/ENDS, EXTERN/EXPORT/EXTDEP,
+   the PRAGMA family, REORG, OS9, INCLUDEBIN/INCLUDESTR, SETSTR,
+   IFPRAGMA/IFSTR all still stubbed. Not touched today.
+9. macro.py confirmed STILL does not exist as a file. This is the "only
+   thing remaining" you named -- and it's accurate. Full implementation
+   roadmap already exists (audit session 9); nothing has been built from
+   it yet.
+10. passes.py's do_output confirmed STILL only implements DECB and RAW;
+    the other 10 formats (OS9 included) still raise NotImplementedError.
+    Not touched today. Still worth confirming whether SuperComm actually
+    needs OS9 format before building anything here.
+11. input_system.py's `fileerr` field confirmed to genuinely exist
+    (lwasm_core.py line 525) but confirmed STILL never referenced
+    anywhere in input_system.py -- the dependency-mode graceful-
+    continuation behavior it was meant to support is still unwired.
+    Low real-world impact unless that mode is ever exercised.
+12. PRAGMA_NOLISTCODE confirmed to STILL have zero mentions anywhere in
+    DESIGN.md. PHASE/DEPHASE has one incidental mention (a field listed
+    in what looks like a struct-field description) but nothing that
+    explicitly flags either one as an intentional lwasm-divergent
+    addition. Still worth a one-line callout in DESIGN.md, still cheap.
+
+STILL OPEN -- not re-checked today (nothing touched these files, so no
+reason to expect the finding has changed, but flagging that this is
+"unchanged by omission" rather than "actively reconfirmed"):
+--------------------------------------------------------------------------------
+13. Session 3's open question: is `register_symbol(cl=NULL, islocal=True)`
+    actually reachable? Never resolved either way, before or since.
+14. pseudo_parse_rmb's struct-mode branch (RMB used inside a STRUCT
+    definition) still has no Python implementation, tied directly to
+    STRUCT/ENDS still being stubbed (see #8) -- not an independent bug,
+    just inherits STRUCT's absence.
+15. input_system.py's malformed-include-prefix handling (falls through
+    to treating a bad prefix as a literal filename instead of erroring)
+    -- cosmetic, error-message-quality only, not a correctness issue.
+
+--------------------------------------------------------------------------------
+BOTTOM LINE
+--------------------------------------------------------------------------------
+Five real fixes landed today, all independently re-verified live against
+the actual deployed repo, not just checked once and assumed durable.
+
+Everything else on the original list is confirmed to still be exactly
+where it was -- which is the right outcome, not a disappointing one: it
+means nothing regressed silently while today's five fixes were going in,
+and the remaining list is now a short, accurate, freshly-dated inventory
+rather than an aging one you'd have to re-derive trust in from scratch.
+
+Macro.c really is the biggest remaining piece, by any reasonable
+measure -- it's the only item on this list that's a missing *feature*
+(MACRO/ENDM can't be used at all) rather than an edge case, a cosmetic
+gap, or a low-traffic corner. Everything else here is either mechanical
+(instab.py), disclosure-only (the documentation gaps), or genuinely low
+stakes (the -1's above).
+================================================================================

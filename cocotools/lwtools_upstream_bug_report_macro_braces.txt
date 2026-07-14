@@ -1,0 +1,195 @@
+================================================================================
+LWTOOLS BUG REPORT — lwasm/macro.c curly-brace argument substitution
+================================================================================
+Project:     LWTOOLS (lwasm)
+File:        lwasm/macro.c
+Function:    expand_macro()
+Version checked against: master branch, github.com/stahta01/LWTools
+             (unofficial mirror; the canonical hg repository at
+             lwtools.ca was not directly reachable during this review —
+             recommend confirming the same code is present in the
+             canonical repository and in the most recent tagged release
+             before acting on this report)
+Discovered:  2026-07-14, while implementing a from-scratch Python
+             translation of lwasm's macro-expansion logic (cocotools,
+             part of a separate CoCo/OS-9 disassembly and restoration
+             project) and verifying it against the real C source line by
+             line. Confirmed empirically by running the translated
+             implementation against a constructed test case, not just
+             read from the C source.
+Credit:      Discovered by Claude (Anthropic), performing the translation
+             and audit at the request of and under the direction of the
+             project owner. Please credit however you see fit, or omit
+             attribution entirely, per your preference and process.
+
+--------------------------------------------------------------------------------
+SUMMARY
+--------------------------------------------------------------------------------
+Inside a macro body, `\{N}` is documented/intended as the "argument N,
+written with braces so multi-digit argument numbers are possible" form of
+argument substitution (a bare `\N` only supports a single digit). However,
+the actual dispatch in expand_macro() matches on a literal `{` character
+with NO backslash requirement at all — unlike every other substitution
+token in the same function (\*, \#, \N), which all require a leading
+backslash. As a result, ANY literal, unescaped `{` appearing anywhere in a
+macro body — including inside what will become a quoted/delimited string
+once the expanded line is re-parsed — is unconditionally consumed as the
+start of an argument reference, with no way to write a literal `{` at all.
+
+--------------------------------------------------------------------------------
+CODE IN QUESTION
+--------------------------------------------------------------------------------
+    else if (*p2 == '{')
+    {
+        int n = 0, n2;
+        p2++;
+        while (*p2 && isdigit(*p2))
+        {
+            n2 = *p2 - '0';
+            if (n2 < 0 || n2 > 9)
+                n2 = 0;
+            n = n * 10 + n2;
+            p2++;
+        }
+        // compensate for the autoinc on p2 if no } is present
+        // to prevent overconsuming input characters
+        if (*p2 != '}')
+            p2--;
+
+        if (n == 0)
+        {
+            for (p3 = m -> name; *p3; p3++)
+                macro_add_to_buff(&linebuff, &bloc, &blen, *p3);
+            continue;
+        }
+        if (n < 1 || n > nargs)
+            continue;
+        for (p3 = args[n - 1]; *p3; p3++)
+            macro_add_to_buff(&linebuff, &bloc, &blen, *p3);
+        continue;
+    }
+
+Compare with the three substitution branches immediately above this one in
+the same if/else-if chain, all of which explicitly require a backslash:
+
+    if (*p2 == '\\' && p2[1] == '*')       { ... }
+    else if (*p2 == '\\' && p2[1] == '#')  { ... }
+    else if (*p2 == '\\' && isdigit(p2[1])) { ... }
+    else if (*p2 == '{')                    { ... }   /* <-- no backslash check */
+
+--------------------------------------------------------------------------------
+WHAT LOOKS WRONG, AND WHY IT'S WORSE THAN A NORMAL RESERVED CHARACTER
+--------------------------------------------------------------------------------
+1. The `{` branch is reached by a bare character match, not a backslash
+   pair, breaking the pattern every other substitution token in this
+   function follows. This appears to be either a copy/refactor oversight
+   (the doc comment above expand_macro says "\1... or by \{n}", implying
+   the author's own intent was for the backslash to be part of the
+   trigger) or, if genuinely intentional, an undocumented asymmetry with
+   the rest of the substitution scheme.
+
+2. There is no escape mechanism for a literal `{` at all. Contrast with
+   how a literal backslash, comma, or space is handled during argument
+   PARSING earlier in the same function (where `\,` and `\ ` are
+   explicitly supported via the general "\X collapses to X" rule) — no
+   equivalent exists for `{` in macro BODY text, because the dispatch
+   condition for `{` never checks for a preceding backslash in the first
+   place, so there's nothing to "escape away from."
+
+3. If no digits follow the `{`, or if a `}` doesn't immediately follow
+   the digit run, the code still commits to having consumed the `{` as a
+   substitution token (n stays 0, or partially accumulates whatever
+   digits were present) — and per the `if (n == 0)` branch, actively
+   substitutes the MACRO'S OWN NAME in place of the `{`, rather than
+   either erroring or leaving the `{` untouched. This means a failed
+   match doesn't fail safe — it fails by inserting unrelated text.
+
+4. Because expand_macro() operates on raw macro-body text as a flat
+   character stream, this happens BEFORE the expanded line is handed back
+   to the assembler for re-parsing — meaning it happens before any
+   pseudo-op-specific delimiter or quoting logic (e.g. FCC's choice of
+   delimiter character) ever comes into play. A `{` inside what the
+   programmer intends as a quoted/delimited string literal is just as
+   exposed as one anywhere else in the line; quoting offers no protection
+   because quoting, as a concept, doesn't exist yet at the point this
+   scan runs.
+
+--------------------------------------------------------------------------------
+CONCRETE REPRODUCTION
+--------------------------------------------------------------------------------
+Source:
+    GREETME MACRO
+            FCC /{hello}/
+            ENDM
+
+            ORG $3F00
+            GREETME
+            END
+
+Intended output (8 bytes): the literal characters  { h e l l o }
+
+Actual output (13 bytes, confirmed via the Python translation, which
+reproduces this dispatch faithfully): the literal characters
+  G R E E T M E h e l l o }
+
+The `{` vanishes entirely and is replaced by the macro's own name
+("GREETME", 7 characters); `hello` passes through untouched (it was never
+part of any substitution attempt); the trailing `}` survives as an
+ordinary character, since nothing ever claimed it. No error or warning is
+produced anywhere in this process.
+
+Also confirmed: changing the FCC delimiter from `/.../ ` to `"..."` (i.e.
+`FCC "{hello}"`) produces byte-for-byte identical output — consistent with
+point 4 above, since the delimiter choice is irrelevant to a bug that
+occurs before delimiters are parsed at all.
+
+--------------------------------------------------------------------------------
+WHY THIS MATTERS
+--------------------------------------------------------------------------------
+- Any macro body that needs to emit a literal `{` — most plausibly inside
+  an FCC/FCC-like string constant intended for display to a user (a
+  prompt, a status message, decorative text) — cannot do so, silently
+  produces wrong output instead of an error, and has no workaround short
+  of restructuring the string to avoid the character entirely (e.g.
+  emitting the byte value $7B via a separate FCB rather than embedding it
+  in the string literal).
+- This is a narrow-impact bug in practice — `{`/`}` have no established
+  meaning in 6809 assembly source generally, so most macro bodies never
+  encounter it — but it is a bug with no error signal at all, which makes
+  it strictly worse than a bug that at least fails loudly: whoever hits
+  it gets subtly wrong assembled output and no indication why, discoverable
+  only by reading macro.c directly.
+
+--------------------------------------------------------------------------------
+SUGGESTED FIX (for consideration — not tested against the full test suite)
+--------------------------------------------------------------------------------
+Minimal, most backward-compatible option: require a backslash before `{`,
+matching every other substitution token in the same function, and add an
+explicit escape for a literal brace:
+
+    else if (*p2 == '\\' && p2[1] == '{')
+    {
+        int n = 0, n2;
+        p2 += 2;
+        while (*p2 && isdigit(*p2))
+        { ... }              /* body unchanged from here */
+    }
+    else if (*p2 == '\\' && p2[1] == '{' && p2[2] == '{')
+        /* optional: \{{  ->  literal '{', for anyone who needs one */
+
+(The second bullet is a suggestion, not a requirement — even without a
+dedicated literal-brace escape, simply requiring the backslash before `{`
+would remove the "bare curly brace in ordinary text is secretly special"
+hazard, since ordinary macro-body text essentially never contains a
+backslash immediately followed by an opening brace by accident.)
+
+I recognize this is a behavior change: any existing macro relying on bare
+`{N}` (without a backslash) would need updating. I have no way to assess
+how much real-world macro code depends on the current bare-brace form, so
+I'm flagging this as something worth your judgment call rather than
+presenting the fix as obviously correct to apply as-is — you're better
+positioned than I am to weigh compatibility against correctness here.
+
+================================================================================
+END OF REPORT
+================================================================================
