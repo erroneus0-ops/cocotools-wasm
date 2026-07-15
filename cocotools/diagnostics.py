@@ -31,14 +31,16 @@ W_SUGGEST_PSHS           = 2002   # use PSHS/PULS instead of indexed on S
 
 
 DIAGNOSTIC_MESSAGES = {
+    W_CC_CLOBBERED_BEFORE_BRANCH: (
+        "Instruction '{insn}' modifies CC flags set by '{compare}' before '{branch}'. "
+        "Branch reads stale flags. Move '{branch}' before '{insn}', or re-compare after '{insn}'. "
+        "To suppress intentionally: add (!W2001) to this line's comment."
+    ),
     W_UNDEFINED_PREDEC1_SU: (
         "Indirect pre-decrement by 1 on {reg} -- [,-{reg}] -- is undefined by Motorola. "
         "Exists on some 6809 silicon but absent on 6309. Portability hazard. "
-        "Direct form ,-{reg} is valid."
-    ),
-    W_CC_CLOBBERED_BEFORE_BRANCH: (
-        "Instruction '{insn}' modifies CC flags set by previous comparison. "
-        "Branch reads stale flags. Move branch before '{insn}' or re-compare."
+        "Direct form ,-{reg} is valid. "
+        "To suppress intentionally: add (!W2000) to this line's comment."
     ),
     W_SUGGEST_PSHS: (
         "Indexed addressing on S/U stack registers with pre-decrement by 1 is "
@@ -71,30 +73,49 @@ REGBITS_U_INDEXED = 0xC0   # U in indexed postbyte
 
 # Instructions that set CC flags used by conditional branches
 CC_SETTING_COMPARE = {
-    # Explicit comparison instructions -- these exist ONLY to set CC flags.
-    # A load between these and a branch is always a bug.
+    # Explicit comparison/test instructions -- exist ONLY to set CC flags.
     'CMPA', 'CMPB', 'CMPD', 'CMPX', 'CMPY', 'CMPU', 'CMPS',
     'TSTA', 'TSTB', 'TST',
-    # Arithmetic/logic that sets CC as primary output (result in register).
-    # A load between these and a branch is usually a bug.
+    'BITA', 'BITB',
+    # Arithmetic -- sets CC as meaningful output
     'ADDA', 'ADDB', 'ADDD', 'ADCA', 'ADCB',
     'SUBA', 'SUBB', 'SUBD', 'SBCA', 'SBCB',
-    'ANDA', 'ANDB',
-    'ORA',  'ORB',
+    # Logic -- sets CC as meaningful output
+    'ANDA', 'ANDB', 'ANDCC',
+    'ORA',  'ORB',  'ORCC',
     'EORA', 'EORB',
+    'COMA', 'COMB', 'COM',
+    # Shifts and rotates -- C/N/Z set meaningfully
     'LSLA', 'LSLB', 'LSL',
     'LSRA', 'LSRB', 'LSR',
     'ASLA', 'ASLB', 'ASL',
     'ASRA', 'ASRB', 'ASR',
     'ROLA', 'ROLB', 'ROL',
     'RORA', 'RORB', 'ROR',
+    # Inc/Dec/Neg -- N/Z/V set meaningfully
     'NEGA', 'NEGB', 'NEG',
     'DECA', 'DECB', 'DEC',
     'INCA', 'INCB', 'INC',
-    # NOTE: LDA/LDB/LDD/LDX etc. intentionally excluded.
-    # Loads set N and Z as a side effect, but they are not compares.
-    # LDA between another LDA and a branch is not a bug -- it is normal code.
-    # ANDCC/ORCC/CLR also excluded: CC manipulation is intentional.
+    # NOTE: LDA/LDB/LDD/LDX/CLR etc. intentionally excluded.
+    # Loads and clears set N/Z as a side effect of data movement,
+    # not as the programmer's intent. They are not compares.
+}
+
+# Instructions that are CC-neutral -- a load between a compare and a
+# branch that passes through one of these is still suspicious.
+CC_NEUTRAL = {
+    'STA', 'STB', 'STD', 'STX', 'STY', 'STU', 'STS',
+    'PSHS', 'PULS', 'PSHU', 'PULU',
+    'NOP',
+    'TFR', 'EXG',
+    'LEAX', 'LEAY', 'LEAU', 'LEAS',
+    'JSR', 'BSR',
+}
+
+# Instructions that clobber CC via data load -- the suspect middle instruction
+CC_CLOBBERING_LOADS = {
+    'LDA', 'LDB', 'LDD', 'LDX', 'LDY', 'LDU', 'LDS',
+    'CLRA', 'CLRB', 'CLR',
 }
 
 # Instructions that clobber N/Z/V/C (the ones branches care about)
