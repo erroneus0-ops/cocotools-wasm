@@ -278,7 +278,8 @@ def make_package(fname, c_rel_path, py_file):
                 existing = m.group(1)
                 break
 
-    pkg = os.path.join(OUTPUT_DIR, fname)
+    rank = next((i for i, (f,_,__) in enumerate(PRIORITY_FUNCTIONS, 1) if f == fname), 0)
+    pkg = os.path.join(OUTPUT_DIR, f"{rank:02d}_{fname}")
     os.makedirs(pkg, exist_ok=True)
 
     open(os.path.join(pkg, 'source.c'), 'w').write(
@@ -288,7 +289,7 @@ def make_package(fname, c_rel_path, py_file):
         f"# Current Python translation of {fname}\n# cocotools/{py_file}\n\n{existing}\n")
     open(os.path.join(pkg, 'brief.md'), 'w').write(make_brief(fname, c_rel_path, py_file, risks))
 
-    print(f"  OK  translation_packages/{fname}/  "
+    print(f"  OK  translation_packages/{rank:02d}_{fname}/  "
           f"({risks['lines']} lines, {risks['branches']} branches, {len(risks['gotos'])} gotos)")
     return True
 
