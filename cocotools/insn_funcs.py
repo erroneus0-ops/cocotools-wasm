@@ -531,11 +531,15 @@ def _parse_indexed_mode(as_, cl, p):
             else:
                 reg_bits = _get_idx_reg_bits(cl, as_, p)
                 if reg_bits is None: return
+                # lwasm unconditionally blocks single pre-decrement indirect [,-R]
+                # It exists on some 6809 silicon but lwasm errors regardless of mode.
+                # Direct form ,-R is valid. Indirect [,-R] is not.
+                if indirect:
+                    as_.register_error(cl, E_OPERAND_BAD)
+                    return
                 pb = reg_bits | 0x82   # ,-R  pre-decrement 1
-                if indirect: pb |= 0x10
                 cl.pb   = pb
                 cl.lint = 0
-                if indirect and p.peek() == ']': p.advance()
                 return
         # zero offset, no expression: ,R or ,R+ or ,R++
         reg_bits = _get_idx_reg_bits(cl, as_, p)
