@@ -139,46 +139,179 @@ class Ptr:
 # surprise the way MOD/INTDIV was.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Fixed-width integer wraparound
+#
+# C's fixed-width integer types (int8_t, uint8_t, int16_t, uint16_t,
+# int32_t, uint32_t) silently wrap when values overflow their declared
+# width. Python integers are arbitrary precision and never wrap.
+#
+# In lwasm these arise in:
+#   - Postbyte construction: pb |= (v & 0x1F)  -- 5-bit signed offset
+#   - DP value masking: dpval & 0xff
+#   - Complement: ~value needs & 0xFF to stay 8-bit
+#   - Any accumulation that C declares as a specific integer type
+#
+# Systematic scan of lwasm C source (July 2026) found these patterns:
+#   insn_indexed.c: v & 0x1F (5-bit signed offset encoding)
+#   insn_gen.c:     (v >> 8) & 0xFF (DP page byte extraction)
+#   insn_gen.c:     pb |= offs & 0x1F (5-bit offset into postbyte)
+#   pseudo.c:       dpval & 0xFF (DP register masking)
+#   lw_expr.c:      ~value & 0xFF (bitwise complement truncated to byte)
+#
+# Usage: call c_uint8(x) wherever C declares uint8_t or masks with 0xFF
+#        call c_int8(x)  wherever C signed-extends an 8-bit value
+#        call c_uint16(x) wherever C declares uint16_t or masks with 0xFFFF
+#        call c_int16(x)  wherever C signed-extends a 16-bit value
+#        call c_5bit(x)   for 5-bit signed indexed offset encoding (v & 0x1F)
+# ---------------------------------------------------------------------------
+
+def c_uint8(value):
+    """Truncate to unsigned 8-bit, matching C's uint8_t semantics."""
+    return value & 0xFF
+
+def c_int8(value):
+    """Truncate to signed 8-bit, matching C's int8_t semantics."""
+    value = value & 0xFF
+    return value if value < 128 else value - 256
+
+def c_uint16(value):
+    """Truncate to unsigned 16-bit, matching C's uint16_t semantics."""
+    return value & 0xFFFF
+
+def c_int16(value):
+    """Truncate to signed 16-bit, matching C's int16_t semantics."""
+    value = value & 0xFFFF
+    return value if value < 32768 else value - 65536
+
+def c_uint32(value):
+    """Truncate to unsigned 32-bit, matching C's uint32_t semantics."""
+    return value & 0xFFFFFFFF
+
+def c_int32(value):
+    """Truncate to signed 32-bit, matching C's int32_t semantics."""
+    value = value & 0xFFFFFFFF
+    return value if value < 2147483648 else value - 4294967296
+
+def c_5bit(value):
+    """Mask to 5-bit unsigned, used for 5-bit signed indexed offset encoding.
+    
+    In C: pb = ((rn & 0x03) << 5) | (v & 0x1F)
+    The 5-bit field encodes -16..+15 in two's complement, but the mask
+    operation itself is unsigned -- the signedness is in the interpretation
+    by the CPU, not in the encoding.
+    """
+    return value & 0x1F
+
+def c_complement8(value):
+    """Bitwise complement truncated to 8 bits, matching C's ~uint8_t.
+    
+    In C: uint8_t r = ~x;  (wraps to 8 bits)
+    In Python: ~x produces an unbounded negative integer.
+    
+    Found in lw_expr.c: tr = ~(E->operands->p->value) & 0xff
+    """
+    return (~value) & 0xFF
+
 def c_int_wrap(value, bits, signed=True):
+    """General fixed-width integer wraparound.
+    
+    Prefer the specific c_uint8/c_int8/c_uint16/c_int16 functions above
+    for the common cases. Use this for non-standard widths.
     """
-    STUB -- not yet implemented, not yet needed.
+    mask = (1 << bits) - 1
+    value = value & mask
+    if signed and value >= (1 << (bits - 1)):
+        value -= (1 << bits)
+    return value
 
-    Would reproduce C's fixed-width integer wraparound: unlike Python's
-    arbitrary-precision int, a C `int8_t`/`uint16_t`/etc. silently wraps
-    (or is undefined-behavior-but-wraps-in-practice, for signed overflow
-    on nearly every real compiler) when a value exceeds its declared
-    width. A translated C function that relies on, e.g., an 8-bit
-    counter wrapping from 255 back to 0 will NOT do that automatically
-    in Python -- the value just keeps growing.
 
-    Intended signature: mask to `bits` bits, then reinterpret as signed
-    two's-complement if signed=True.
-    """
-    raise NotImplementedError(
-        "c_int_wrap: not yet needed by any audited cocotools file; "
-        "implement if a future C source relies on fixed-width wraparound."
-    )
+# ---------------------------------------------------------------------------
+# goto -- structured control flow replacement
+#
+# C uses goto for forward/backward jumps that break out of nested logic.
+# Found 27 goto occurrences in lwasm (insn_indexed.c, insn_gen.c, pseudo.c).
+#
+# lwasm's goto patterns fall into three categories:
+#
+# 1. Forward jump to shared error exit:
+#    C:   goto out;   (at the end: out: return;)
+#    Py:  return      (just return early -- same effect)
+#
+# 2. Forward jump to shared code path:
+#    C:   goto do16bit;  (jumps to a 16-bit encoding block)
+#    Py:  Refactor into a helper function or use a flag variable.
+#         _do_16bit(l) or set lint=2 and fall through.
+#
+# 3. Forward jump to a different parsing mode:
+#    C:   goto indexed;  (jumps to indexed addressing parse)
+#    Py:  Call the indexed parse function directly.
+#
+# The existing Python translation handles these via early returns and
+# helper function calls. No additional primitives needed -- just careful
+# restructuring at each goto site.
+# ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# isspace / toupper / C character classification
+#
+# C's ctype.h functions (isspace, toupper, isalpha, isdigit, isalnum)
+# are used throughout lwasm for character classification during parsing.
+# Python equivalents are straightforward but need care with locale.
+#
+# Found in lwasm:
+#   isspace(**p) -- whitespace check during token scanning
+#   toupper(**p) -- case-insensitive register name matching
+#
+# Python equivalents:
+#   isspace(c)  -> c.isspace() (c in space/tab/newline/etc.)
+#   toupper(c)  -> c.upper()
+#   isalpha(c)  -> c.isalpha()
+#   isdigit(c)  -> c.isdigit()
+#   isalnum(c)  -> c.isalnum()
+#
+# CRITICAL: Python's str.isspace() returns False for '' (empty string).
+# C's isspace('NUL') is also false, so they agree. But lwasm checks
+# **p == 'NUL' as end-of-string; Python uses p.at_end() or p.peek() == ''.
+# The Ptr class already handles this correctly.
+#
+# No additional primitives needed -- Python string methods are sufficient.
+# Document here to prevent re-discovery during translation.
+# ---------------------------------------------------------------------------
+
+def c_isspace(c):
+    """C isspace() equivalent -- whitespace check for parsing."""
+    return c in (' ', '\t', '\r', '\n', '\f', '\v')
+
+
+def c_toupper(c):
+    """C toupper() equivalent -- single character uppercase."""
+    return c.upper() if c else ''
+
+
+# ---------------------------------------------------------------------------
+# Null-terminated string walking
+#
+# C's while (*p) { ...; p++; } idiom walks null-terminated strings.
+# The Ptr class handles the cursor advancement, but null-termination
+# as an end condition maps to Ptr.at_end() or Ptr.peek() == ''.
+#
+# Found in lw_expr.c and pseudo.c for pragma string parsing.
+# No additional primitives needed -- Ptr.peek() == '' is the Python
+# equivalent of C's *p == 'NUL' (end of string / null terminator).
+# ---------------------------------------------------------------------------
 
 def c_strlen_walk(buf, start=0):
+    """Walk a null-terminated string, returning the content up to null.
+    
+    C idiom: while (*p) { ... p++; }
+    Python: use Ptr and check Ptr.peek() == '' for end condition.
+    
+    This function is provided for cases where you genuinely need the
+    C strlen behavior on a Python str or bytes object.
     """
-    STUB -- not yet implemented, not yet needed.
-
-    Would reproduce the common C idiom where a null-terminated buffer's
-    trailing \\0 is doing double duty as both "stop iterating here" and
-    "this is how long the string actually is" -- a single sentinel byte
-    serving as an implicit length field. Python strings/bytes carry their
-    own length as a real property, so a direct translation of a
-    `while (*p) { ...; p++; }` loop needs to notice that the null check
-    was ALSO functioning as a length check, and preserve both behaviors
-    rather than just the "keep looping" half.
-
-    Intended behavior: return the length of the null-terminated run in
-    `buf` starting at `start`, without needing an explicit length passed
-    in -- i.e. the Python-side reconstruction of the implicit C contract.
-    """
-    raise NotImplementedError(
-        "c_strlen_walk: not yet needed by any audited cocotools file; "
-        "implement if a future C source relies on null-termination as "
-        "an implicit length field rather than an explicit one."
-    )
+    end = start
+    while end < len(buf) and buf[end] != '\\0' and buf[end] != 0:
+        end += 1
+    return buf[start:end]
