@@ -48,10 +48,18 @@ PRIORITY_FUNCTIONS = [
 
 
 def find_function(source, fname):
-    """Extract a named C function. Returns (start_line, end_line, text) or None."""
+    """Extract a named C function. Returns (start_line, end_line, text) or None.
+    
+    Handles both direct definitions and macro-wrapped definitions:
+      void insn_parse_rlist(...)  -- direct
+      PARSEFUNC(insn_parse_rlist) -- macro (expands to same thing)
+    """
     lines = source.split('\n')
     for i, line in enumerate(lines):
-        if not re.search(r'\b' + re.escape(fname) + r'\s*\(', line):
+        # Match direct definition OR macro-wrapped definition
+        direct  = re.search(r'\b' + re.escape(fname) + r'\s*\(', line)
+        macro   = re.search(r'(?:PARSEFUNC|EMITFUNC|RESOLVEFUNC)\s*\(\s*' + re.escape(fname) + r'\s*\)', line)
+        if not (direct or macro):
             continue
         if line and line[0].isspace():
             continue
