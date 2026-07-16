@@ -25,8 +25,25 @@ import tempfile
 import subprocess
 import argparse
 
-ASM6809 = os.environ.get('ASM6809', '/home/claude/asm6809/src/asm6809')
-LWASM   = os.environ.get('LWASM', os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lwtools-4.24', 'lwasm', 'lwasm'))
+# LWASM: prefer environment variable, then repo-local build, then system PATH
+def _find_tool(env_var, *candidates):
+    if env_var in os.environ:
+        return os.environ[env_var]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return candidates[-1]  # fall through to PATH attempt
+
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LWASM = _find_tool('LWASM',
+    os.path.join(_REPO, 'lwtools-4.24', 'lwasm', 'lwasm'),   # Linux build
+    os.path.join(_REPO, 'lwtools-4.24', 'lwasm', 'lwasm.exe'),# Windows build
+    'lwasm',                                                    # system PATH
+)
+ASM6809 = _find_tool('ASM6809',
+    '/home/claude/asm6809/src/asm6809',
+    'asm6809',
+)
 
 # ── Test case definitions ─────────────────────────────────────────────────────
 # Each entry: (mnemonic, operand, mode_description, expect_error)
