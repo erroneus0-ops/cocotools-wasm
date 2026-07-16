@@ -551,6 +551,10 @@ def _parse_indexed_mode(as_, cl, p):
                 p.advance()
                 pb = reg_bits | 0x81   # ,R++ post-increment 2
             else:
+                # lwasm blocks single post-increment indirect [,R+]
+                if indirect:
+                    as_.register_error(cl, E_OPERAND_BAD)
+                    return
                 pb = reg_bits | 0x80   # ,R+  post-increment 1
         else:
             pb = reg_bits | 0x84       # ,R   zero-offset
@@ -564,6 +568,9 @@ def _parse_indexed_mode(as_, cl, p):
     expr = as_.parse_expr(p)
     if not expr:
         as_.register_error(cl, E_OPERAND_BAD); return
+    # Reduce immediately so negative constants (-5, -100 etc.) become TYPE_INT
+    # Without this, -5 stays as OPER_NEG(5) and gets misclassified as 16-bit
+    as_.reduce_expr(expr)
     cl.save_expr(0, expr)
 
     # [expr] with no register = extended indirect (post-byte 0x9F)
