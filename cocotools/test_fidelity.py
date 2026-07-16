@@ -251,6 +251,195 @@ TESTS = [
 ]
 
 
+# ── Behavioral tests -- error conditions and pseudo-ops ──────────────────────
+# Each entry: (description, full_source, expect_error)
+# These test lwasm behavioral fidelity beyond just byte output.
+
+BEHAVIOR_TESTS = [
+    # ── Error conditions ──────────────────────────────────────────────────────
+    ("error-bad-operand-no-arg",
+     "         ORG $3F00\n         LDA\n         END\n",
+     True),
+
+    ("error-undefined-symbol",
+     "         ORG $3F00\n         BRA UNDEF\n         END\n",
+     True),
+
+    ("error-byte-overflow",
+     "         ORG $3F00\n         LDA #256\n         END\n",
+     True),
+
+    ("error-bad-register-pshs",
+     "         ORG $3F00\n         PSHS Z\n         END\n",
+     True),
+
+    ("error-equ-no-label",
+     "         ORG $3F00\n         EQU 5\n         END\n",
+     True),
+
+    ("error-indirect-predec1",
+     "         ORG $3F00\n         LDA [,-X]\n         END\n",
+     True),
+
+    ("error-indirect-postinc1",
+     "         ORG $3F00\n         LDA [,X+]\n         END\n",
+     True),
+
+    # ── Pseudo-ops -- correct byte output ────────────────────────────────────
+    ("pseudo-fcb-single",
+     "         ORG $3F00\n         FCB $42\n         END\n",
+     False),
+
+    ("pseudo-fcb-multiple",
+     "         ORG $3F00\n         FCB $42,$43,$44\n         END\n",
+     False),
+
+    ("pseudo-fcb-negative",
+     "         ORG $3F00\n         FCB -1\n         END\n",
+     False),
+
+    ("pseudo-fcb-truncates-256",
+     "         ORG $3F00\n         FCB 256\n         END\n",
+     False),
+
+    ("pseudo-fdb-single",
+     "         ORG $3F00\n         FDB $1234\n         END\n",
+     False),
+
+    ("pseudo-fdb-negative",
+     "         ORG $3F00\n         FDB -1\n         END\n",
+     False),
+
+    ("pseudo-fcc-string",
+     "         ORG $3F00\n         FCC /hello/\n         END\n",
+     False),
+
+    ("pseudo-rmb",
+     "         ORG $3F00\n         RMB 4\n         FCB $FF\n         END\n",
+     False),
+
+    ("pseudo-equ-label",
+     "FIVE     EQU 5\n         ORG $3F00\n         LDA #FIVE\n         END\n",
+     False),
+
+    ("pseudo-equ-expression",
+     "BASE     EQU $3F00\nOFFSET   EQU 5\n         ORG $3F00\n         FDB BASE+OFFSET\n         END\n",
+     False),
+
+    # ── Expression evaluation ─────────────────────────────────────────────────
+    ("expr-addition",
+     "         ORG $3F00\n         LDA #2+3\n         END\n",
+     False),
+
+    ("expr-subtraction",
+     "         ORG $3F00\n         LDA #10-3\n         END\n",
+     False),
+
+    ("expr-multiplication",
+     "         ORG $3F00\n         LDA #3*4\n         END\n",
+     False),
+
+    ("expr-bitwise-or",
+     "         ORG $3F00\n         LDA #$0F|$F0\n         END\n",
+     False),
+
+    ("expr-bitwise-and",
+     "         ORG $3F00\n         LDA #$FF&$0F\n         END\n",
+     False),
+
+    # ("expr-shift-left", -- lwasm doesn't support << operator)
+
+    ("expr-unary-neg",
+     "         ORG $3F00\n         LDA #-5\n         END\n",
+     False),
+
+    ("expr-current-addr",
+     "         ORG $3F00\n         FDB *\n         END\n",
+     False),
+
+    # ── TFR size mismatch -- lwasm allows, produces specific bytes ────────────
+    ("tfr-size-mismatch-a-x",
+     "         ORG $3F00\n         TFR A,X\n         END\n",
+     False),
+
+    ("tfr-size-mismatch-d-a",
+     "         ORG $3F00\n         TFR D,A\n         END\n",
+     False),
+
+    # ── Multiple ORG segments ─────────────────────────────────────────────────
+    ("multi-org",
+     "         ORG $3F00\n         LDA #$01\n         ORG $4000\n         LDA #$02\n         END\n",
+     False),
+]
+
+
+def run_behavior_tests(mode6309=False, verbose=False):
+    """Run behavioral fidelity tests."""
+    passed = 0
+    failed = 0
+    errors = []
+
+    print(f"\nRunning {len(BEHAVIOR_TESTS)} behavioral tests...")
+
+    for desc, source, expect_error in BEHAVIOR_TESTS:
+        cocotools_bytes, cocotools_err = assemble_cocotools(source, mode6309)
+        lwasm_bytes,     lwasm_err     = assemble_lwasm(source, mode6309)
+
+        cocotools_errored = cocotools_bytes is None
+        lwasm_errored     = lwasm_bytes     is None
+
+        if expect_error:
+            if cocotools_errored and lwasm_errored:
+                if verbose:
+                    print(f"  PASS  [{desc}] -- both error as expected")
+                passed += 1
+            elif not cocotools_errored and lwasm_errored:
+                msg = f"FAIL  [{desc}] -- cocotools accepted, lwasm errors"
+                print(f"  {msg}")
+                errors.append(msg)
+                failed += 1
+            elif cocotools_errored and not lwasm_errored:
+                msg = f"FAIL  [{desc}] -- cocotools errors, lwasm accepts"
+                print(f"  {msg}")
+                errors.append(msg)
+                failed += 1
+            else:
+                msg = f"FAIL  [{desc}] -- both accepted (expected error)"
+                print(f"  {msg}")
+                errors.append(msg)
+                failed += 1
+        else:
+            if cocotools_errored and lwasm_errored:
+                msg = f"FAIL  [{desc}] -- both errored\n       cocotools: {cocotools_err}\n       lwasm:     {lwasm_err}"
+                print(f"  {msg}")
+                errors.append(msg)
+                failed += 1
+            elif cocotools_errored:
+                msg = f"FAIL  [{desc}] -- cocotools error: {cocotools_err}"
+                print(f"  {msg}")
+                errors.append(msg)
+                failed += 1
+            elif lwasm_errored:
+                msg = f"FAIL  [{desc}] -- lwasm error: {lwasm_err}"
+                print(f"  {msg}")
+                errors.append(msg)
+                failed += 1
+            elif cocotools_bytes == lwasm_bytes:
+                if verbose:
+                    print(f"  PASS  [{desc}] = {cocotools_bytes.hex().upper()}")
+                passed += 1
+            else:
+                ct_hex = cocotools_bytes.hex().upper()
+                lw_hex = lwasm_bytes.hex().upper()
+                msg = f"FAIL  [{desc}]\n       cocotools: {ct_hex}\n       lwasm:     {lw_hex}"
+                print(f"  {msg}")
+                errors.append(msg)
+                failed += 1
+
+    print(f"Behavioral results: {passed} passed, {failed} failed out of {len(BEHAVIOR_TESTS)} tests")
+    return failed == 0
+
+
 # ── Assembly functions ────────────────────────────────────────────────────────
 
 def assemble_cocotools(source, mode6309=False):
@@ -467,5 +656,6 @@ if __name__ == '__main__':
         print("Build it or set ASM6809 environment variable")
         sys.exit(1)
     
-    success = run_tests(mode6309=args.mode6309, verbose=args.verbose)
-    sys.exit(0 if success else 1)
+    success1 = run_tests(mode6309=args.mode6309, verbose=args.verbose)
+    success2 = run_behavior_tests(mode6309=args.mode6309, verbose=args.verbose)
+    sys.exit(0 if (success1 and success2) else 1)
