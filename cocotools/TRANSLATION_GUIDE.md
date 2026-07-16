@@ -252,6 +252,9 @@ assembler produces wrong binary output silently, the learner cannot
 distinguish between "I wrote wrong assembly" and "the tool is wrong."
 They assume they are wrong. They learn incorrectly or give up.
 
+Translate this faithfully because a learner who can't distinguish tool
+errors from their own errors will incorrectly conclude they are wrong.
+
 A faithful translation is not optional. The fidelity harness
 (`python cocotools/test_fidelity.py`) is the arbiter of correctness.
 193 tests currently pass against lwasm 4.24. Every translated function
