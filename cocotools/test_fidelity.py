@@ -26,7 +26,7 @@ import subprocess
 import argparse
 
 ASM6809 = os.environ.get('ASM6809', '/home/claude/asm6809/src/asm6809')
-LWASM   = os.environ.get('LWASM', 'lwasm')
+LWASM   = os.environ.get('LWASM', os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lwtools-4.24', 'lwasm', 'lwasm'))
 
 # ── Test case definitions ─────────────────────────────────────────────────────
 # Each entry: (mnemonic, operand, mode_description, expect_error)
@@ -449,7 +449,7 @@ def run_tests(mode6309=False, verbose=False):
     print(f"Results: {passed} passed, {failed} failed out of {len(TESTS)} tests")
     
     if failed == 0:
-        print("All tests passed -- cocotools is byte-for-byte faithful to asm6809")
+        print("All tests passed -- cocotools is byte-for-byte faithful to lwasm 4.24")
     else:
         print(f"\n{failed} divergences found. Fix these before trusting cocotools output.")
     
