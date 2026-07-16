@@ -26,6 +26,7 @@ import subprocess
 import argparse
 
 ASM6809 = os.environ.get('ASM6809', '/home/claude/asm6809/src/asm6809')
+LWASM   = os.environ.get('LWASM', 'lwasm')
 
 # ── Test case definitions ─────────────────────────────────────────────────────
 # Each entry: (mnemonic, operand, mode_description, expect_error)
@@ -286,8 +287,41 @@ def assemble_cocotools(source, mode6309=False):
             except: pass
 
 
+def assemble_lwasm(source, mode6309=False):
+    """Assemble source with lwasm (primary reference). Returns (bytes, error_string)."""
+    with tempfile.NamedTemporaryFile(suffix='.asm', mode='w', delete=False) as f:
+        f.write(source)
+        src_path = f.name
+
+    out_path = src_path.replace('.asm', '.bin')
+
+    try:
+        cmd = [LWASM, '--decb', f'--output={out_path}']
+        if mode6309:
+            cmd.append('--6309')
+        else:
+            cmd.append('--6809')
+        cmd.append(src_path)
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            err = result.stderr.strip() or result.stdout.strip()
+            return None, err
+
+        if os.path.exists(out_path):
+            raw = open(out_path, 'rb').read()
+            code = _extract_decb(raw)
+            return code, None
+        return None, "no output file"
+    finally:
+        for p in [src_path, out_path]:
+            try: os.unlink(p)
+            except: pass
+
+
 def assemble_asm6809(source, mode6309=False):
-    """Assemble source with asm6809. Returns (bytes, error_string)."""
+    """Assemble source with asm6809 (secondary reference). Returns (bytes, error_string)."""
     with tempfile.NamedTemporaryFile(suffix='.asm', mode='w', delete=False) as f:
         f.write(source)
         src_path = f.name
@@ -341,7 +375,7 @@ def run_tests(mode6309=False, verbose=False):
     errors = []
 
     print(f"Running {len(TESTS)} fidelity tests {'(6309 mode)' if mode6309 else '(6809 mode)'}...")
-    print(f"Reference: {ASM6809}")
+    print(f"Reference: lwasm ({LWASM})")
     print()
 
     for mnemonic, operand, desc, expect_error in TESTS:
@@ -352,10 +386,10 @@ def run_tests(mode6309=False, verbose=False):
         source = PREAMBLE_BEFORE + src_line + "\n         RTS\nBRLABEL  EQU   *\n         END\n"
         
         cocotools_bytes, cocotools_err = assemble_cocotools(source, mode6309)
-        asm6809_bytes,   asm6809_err   = assemble_asm6809(source, mode6309)
+        lwasm_bytes,     lwasm_err     = assemble_lwasm(source, mode6309)
 
         cocotools_errored = cocotools_bytes is None
-        asm6809_errored   = asm6809_bytes   is None
+        asm6809_errored   = lwasm_bytes     is None
 
         if expect_error:
             # Both should error
@@ -364,12 +398,12 @@ def run_tests(mode6309=False, verbose=False):
                     print(f"  PASS  {mnemonic} {operand:<20} [{desc}] -- both error as expected")
                 passed += 1
             elif not cocotools_errored and asm6809_errored:
-                msg = f"FAIL  {mnemonic} {operand:<20} [{desc}] -- cocotools accepted but asm6809 errors"
+                msg = f"FAIL  {mnemonic} {operand:<20} [{desc}] -- cocotools accepted but lwasm errors"
                 print(f"  {msg}")
                 errors.append(msg)
                 failed += 1
             elif cocotools_errored and not asm6809_errored:
-                msg = f"WARN  {mnemonic} {operand:<20} [{desc}] -- cocotools errors but asm6809 accepts"
+                msg = f"WARN  {mnemonic} {operand:<20} [{desc}] -- cocotools errors but lwasm accepts"
                 print(f"  {msg}")
                 errors.append(msg)
                 failed += 1
@@ -380,8 +414,11 @@ def run_tests(mode6309=False, verbose=False):
                 failed += 1
         else:
             # Both should succeed and produce identical bytes
+            ref_bytes = lwasm_bytes
+            ref_err   = lwasm_err
+            ref_name  = 'lwasm'
             if cocotools_errored and asm6809_errored:
-                msg = f"FAIL  {mnemonic} {operand:<20} [{desc}] -- both errored\n       cocotools: {cocotools_err}\n       asm6809:   {asm6809_err}"
+                msg = f"FAIL  {mnemonic} {operand:<20} [{desc}] -- both errored\n       cocotools: {cocotools_err}\n       {ref_name}:   {ref_err}"
                 print(f"  {msg}")
                 errors.append(msg)
                 failed += 1
@@ -391,19 +428,19 @@ def run_tests(mode6309=False, verbose=False):
                 errors.append(msg)
                 failed += 1
             elif asm6809_errored:
-                msg = f"FAIL  {mnemonic} {operand:<20} [{desc}] -- asm6809 error: {asm6809_err}"
+                msg = f"FAIL  {mnemonic} {operand:<20} [{desc}] -- {ref_name} error: {ref_err}"
                 print(f"  {msg}")
                 errors.append(msg)
                 failed += 1
-            elif cocotools_bytes == asm6809_bytes:
+            elif cocotools_bytes == ref_bytes:
                 if verbose:
                     hex_out = cocotools_bytes.hex().upper()
                     print(f"  PASS  {mnemonic} {operand:<20} [{desc}] = {hex_out}")
                 passed += 1
             else:
                 ct_hex = cocotools_bytes.hex().upper() if cocotools_bytes else 'None'
-                a6_hex = asm6809_bytes.hex().upper()   if asm6809_bytes   else 'None'
-                msg = f"FAIL  {mnemonic} {operand:<20} [{desc}]\n       cocotools: {ct_hex}\n       asm6809:   {a6_hex}"
+                lw_hex = ref_bytes.hex().upper()       if ref_bytes       else 'None'
+                msg = f"FAIL  {mnemonic} {operand:<20} [{desc}]\n       cocotools: {ct_hex}\n       {ref_name}:   {lw_hex}"
                 print(f"  {msg}")
                 errors.append(msg)
                 failed += 1
