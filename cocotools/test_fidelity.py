@@ -373,6 +373,182 @@ BEHAVIOR_TESTS = [
 ]
 
 
+# ── Structural tests -- internal state after assembly ────────────────────────
+# These verify that cl.pb, cl.lint, cl.len etc. contain the correct values
+# after parse/resolve/emit -- not just that the output bytes are correct.
+# A function could produce correct output bytes by accident while carrying
+# wrong internal state that would fail on more complex inputs.
+
+STRUCTURAL_TESTS = [
+    # (description, source, assertions: field -> expected_value)
+
+    ("struct-immediate-lda",
+     "         ORG $3F00\nTEST     LDA   #$42\n         END\n",
+     {'len': 2, 'pb': 0, 'lint': 0}),
+
+    ("struct-direct-lda",
+     "         ORG $3F00\nTEST     LDA   <$42\n         END\n",
+     {'len': 2, 'pb': 0, 'lint': 0}),
+
+    ("struct-extended-lda",
+     "         ORG $3F00\nTEST     LDA   $1234\n         END\n",
+     {'len': 3, 'pb': 0, 'lint': 0}),
+
+    ("struct-indexed-zero-offset",
+     "         ORG $3F00\nTEST     LDA   ,X\n         END\n",
+     {'len': 2, 'pb': 0x84, 'lint': 0}),
+
+    ("struct-indexed-8bit-offset",
+     "         ORG $3F00\nTEST     LDA   100,X\n         END\n",
+     {'len': 3, 'pb': 0x88, 'lint': 1}),
+
+    ("struct-indexed-16bit-offset",
+     "         ORG $3F00\nTEST     LDA   1000,X\n         END\n",
+     {'len': 4, 'pb': 0x89, 'lint': 2}),
+
+    ("struct-indexed-5bit-neg-offset",
+     "         ORG $3F00\nTEST     LDA   -5,X\n         END\n",
+     {'len': 2, 'pb': 0x1B, 'lint': 0}),
+
+    ("struct-indexed-acc-a",
+     "         ORG $3F00\nTEST     LDA   A,X\n         END\n",
+     {'len': 2, 'pb': 0x86, 'lint': 0}),
+
+    ("struct-indexed-acc-d",
+     "         ORG $3F00\nTEST     LDA   D,X\n         END\n",
+     {'len': 2, 'pb': 0x8B, 'lint': 0}),
+
+    ("struct-indexed-postinc2",
+     "         ORG $3F00\nTEST     LDA   ,X++\n         END\n",
+     {'len': 2, 'pb': 0x81, 'lint': 0}),
+
+    ("struct-indexed-predec2",
+     "         ORG $3F00\nTEST     LDA   ,--X\n         END\n",
+     {'len': 2, 'pb': 0x83, 'lint': 0}),
+
+    ("struct-indexed-indirect-zero",
+     "         ORG $3F00\nTEST     LDA   [,X]\n         END\n",
+     {'len': 2, 'pb': 0x94, 'lint': 0}),
+
+    ("struct-indexed-indirect-16bit",
+     "         ORG $3F00\nTEST     LDA   [1000,X]\n         END\n",
+     {'len': 4, 'pb': 0x99, 'lint': 2}),
+
+    ("struct-extended-indirect",
+     "         ORG $3F00\nTEST     LDA   [$1234]\n         END\n",
+     {'len': 4, 'pb': 0x9F, 'lint': 2}),
+
+    ("struct-pshs-d",
+     "         ORG $3F00\nTEST     PSHS  D\n         END\n",
+     {'len': 2, 'pb': 0x06, 'lint': 0}),
+
+    ("struct-pshs-pc",
+     "         ORG $3F00\nTEST     PSHS  PC\n         END\n",
+     {'len': 2, 'pb': 0x80, 'lint': 0}),
+
+    ("struct-tfr-d-x",
+     "         ORG $3F00\nTEST     TFR   D,X\n         END\n",
+     {'len': 2, 'pb': 0x01, 'lint': 0}),
+
+    ("struct-tfr-a-b",
+     "         ORG $3F00\nTEST     TFR   A,B\n         END\n",
+     {'len': 2, 'pb': 0x89, 'lint': 0}),
+]
+
+
+def _get_line_state(source, label='TEST', mode6309=False):
+    """Assemble source and return the internal state of the labeled line."""
+    import sys, os, tempfile
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+    from cocotools.lwasm_core import AsmState
+    from cocotools.input_system import InputSystem
+    from cocotools.pass1 import do_pass1
+    from cocotools.passes import (do_pass2, do_pass3, do_pass4,
+                                   do_pass5, do_pass6, do_pass7)
+    from cocotools.lwasm_types import PRAGMA_6809
+
+    as_ = AsmState()
+    as_.input = InputSystem(as_)
+    if mode6309:
+        as_.pragmas &= ~PRAGMA_6809
+
+    # Write to temp file -- input system requires a file path
+    with tempfile.NamedTemporaryFile(suffix='.asm', mode='w', delete=False) as f:
+        f.write(source)
+        src_path = f.name
+
+    try:
+        as_.input.open(src_path)
+        do_pass1(as_)
+        if as_.errorcount: return None, as_.errorcount
+        do_pass2(as_)
+        if as_.errorcount: return None, as_.errorcount
+        do_pass3(as_)
+        do_pass4(as_)
+        do_pass5(as_)
+        do_pass6(as_)
+        do_pass7(as_)
+    finally:
+        os.unlink(src_path)
+
+    # Find the labeled line
+    cl = as_.line_head
+    while cl:
+        if cl.sym == label:
+            return cl, 0
+        cl = cl.next
+    return None, 0
+
+
+def run_structural_tests(mode6309=False, verbose=False):
+    """Run structural tests -- verify internal line state after assembly."""
+    passed = 0
+    failed = 0
+    errors = []
+
+    print(f"\nRunning {len(STRUCTURAL_TESTS)} structural tests...")
+
+    for desc, source, expected in STRUCTURAL_TESTS:
+        cl, errcount = _get_line_state(source, mode6309=mode6309)
+
+        if cl is None or errcount > 0:
+            msg = f"FAIL  [{desc}] -- assembly failed (errors: {errcount})"
+            print(f"  {msg}")
+            errors.append(msg)
+            failed += 1
+            continue
+
+        ok = True
+        mismatches = []
+        for field, expected_val in expected.items():
+            actual_val = getattr(cl, field, '???')
+            if actual_val != expected_val:
+                mismatches.append(
+                    f"{field}: expected {expected_val} (0x{expected_val:02X} if int), "
+                    f"got {actual_val} (0x{actual_val:02X} if int)"
+                    if isinstance(expected_val, int) and isinstance(actual_val, int)
+                    else f"{field}: expected {expected_val}, got {actual_val}"
+                )
+                ok = False
+
+        if ok:
+            if verbose:
+                state = ', '.join(f"{k}={expected[k]:#04x}" if isinstance(expected[k],int) 
+                                  else f"{k}={expected[k]}"
+                                  for k in expected)
+                print(f"  PASS  [{desc}] -- {state}")
+            passed += 1
+        else:
+            msg = f"FAIL  [{desc}]\n       " + "\n       ".join(mismatches)
+            print(f"  {msg}")
+            errors.append(msg)
+            failed += 1
+
+    print(f"Structural results: {passed} passed, {failed} failed out of {len(STRUCTURAL_TESTS)} tests")
+    return failed == 0
+
+
 def run_behavior_tests(mode6309=False, verbose=False):
     """Run behavioral fidelity tests."""
     passed = 0
@@ -658,4 +834,5 @@ if __name__ == '__main__':
     
     success1 = run_tests(mode6309=args.mode6309, verbose=args.verbose)
     success2 = run_behavior_tests(mode6309=args.mode6309, verbose=args.verbose)
-    sys.exit(0 if (success1 and success2) else 1)
+    success3 = run_structural_tests(mode6309=args.mode6309, verbose=args.verbose)
+    sys.exit(0 if (success1 and success2 and success3) else 1)
