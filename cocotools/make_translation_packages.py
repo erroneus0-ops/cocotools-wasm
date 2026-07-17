@@ -197,19 +197,28 @@ Size: {r['lines']} lines, {r['branches']} branches, {len(r['gotos'])} gotos
 The C function is in `source.c`.
 The current Python translation (if any) is in `existing.py`.
 
-## Setup (do this first)
+## FIRST ACTION -- before reading anything else
 
-Use bash_tool to clone the repository -- do NOT use web_fetch to browse GitHub:
+Run this bash_tool command block immediately. Do not use web_fetch for any repo files.
+web_fetch cannot access this repository reliably. bash_tool can. Use bash_tool.
 
 ```bash
-git clone https://github.com/erroneus0-ops/SuperComm-disassembled.git /tmp/supercomm
-cd /tmp/supercomm
-pip install --break-system-packages -e . 2>/dev/null || true
+git clone https://github.com/erroneus0-ops/SuperComm-disassembled.git /tmp/supercomm && \
+cd /tmp/supercomm && \
+make -C lwtools-4.24 -j$(nproc) 2>/dev/null && \
+echo "READY"
 ```
 
-All files are then available locally. The fidelity harness requires lwasm:
+Wait for READY before proceeding. All files are now in /tmp/supercomm/.
+Do not use web_fetch to fetch any files from this repository. Use bash_tool to read them:
 ```bash
-cd /tmp/supercomm/lwtools-4.24 && make -j$(nproc) 2>/dev/null
+cat /tmp/supercomm/translation_packages/{rank:02d}_{fname}/source.c
+cat /tmp/supercomm/translation_packages/{rank:02d}_{fname}/checklist.md
+cat /tmp/supercomm/translation_packages/{rank:02d}_{fname}/existing.py
+cat /tmp/supercomm/cocotools/TRANSLATION_GUIDE.md
+cat /tmp/supercomm/cocotools/DATA_STRUCTURE_AUDIT.md
+cat /tmp/supercomm/cocotools/c_compat.py
+cat /tmp/supercomm/cocotools/{py_file}
 ```
 
 ## Required reading (in order)
