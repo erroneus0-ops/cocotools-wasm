@@ -844,9 +844,11 @@ if __name__ == '__main__':
     parser.add_argument('--6309', '-3', dest='mode6309', action='store_true')
     args = parser.parse_args()
     
-    if not os.path.exists(ASM6809):
-        print(f"ERROR: asm6809 not found at {ASM6809}")
-        print("Build it or set ASM6809 environment variable")
+    import shutil
+    lwasm_ok = os.path.exists(LWASM) or shutil.which(LWASM) is not None
+    if not lwasm_ok:
+        print(f"ERROR: lwasm not found at {LWASM}")
+        print("Build lwtools-4.24 or set LWASM environment variable")
         sys.exit(1)
     
     success1 = run_tests(mode6309=args.mode6309, verbose=args.verbose)
