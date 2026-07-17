@@ -175,7 +175,7 @@ Check compound expressions. Add mask only where C destination type truncates.
 """
 
 
-def make_brief(fname, c_path, py_file, r):
+def make_brief(fname, c_path, py_file, r, rank=0):
     return f"""# Translation Brief: `{fname}`
 
 ## Your task
@@ -241,9 +241,14 @@ Fix the translation until the tests pass.
 
 ## Reference
 
-lwtools 4.24: http://www.lwtools.ca/hg/index.cgi/file/0baeffe2747f/{c_path}
+C source (from repo tarball): https://raw.githubusercontent.com/erroneus0-ops/SuperComm-disassembled/main/{c_path}
 Repository: https://github.com/erroneus0-ops/SuperComm-disassembled
-TRANSLATION_GUIDE: cocotools/TRANSLATION_GUIDE.md
+TRANSLATION_GUIDE: https://raw.githubusercontent.com/erroneus0-ops/SuperComm-disassembled/main/cocotools/TRANSLATION_GUIDE.md
+DATA_STRUCTURE_AUDIT: https://raw.githubusercontent.com/erroneus0-ops/SuperComm-disassembled/main/cocotools/DATA_STRUCTURE_AUDIT.md
+c_compat.py: https://raw.githubusercontent.com/erroneus0-ops/SuperComm-disassembled/main/cocotools/c_compat.py
+source.c: https://raw.githubusercontent.com/erroneus0-ops/SuperComm-disassembled/main/translation_packages/{rank:02d}_{fname}/source.c
+checklist.md: https://raw.githubusercontent.com/erroneus0-ops/SuperComm-disassembled/main/translation_packages/{rank:02d}_{fname}/checklist.md
+existing.py: https://raw.githubusercontent.com/erroneus0-ops/SuperComm-disassembled/main/translation_packages/{rank:02d}_{fname}/existing.py
 """
 
 
@@ -263,17 +268,33 @@ def make_package(fname, c_rel_path, py_file):
     start, end, c_text = result
     risks = analyze_risks(c_text)
 
-    # Find existing Python
+    # Find existing Python -- try multiple name conventions
     py_full = os.path.join(REPO_ROOT, 'cocotools', py_file)
     existing = f"# {fname} not yet located in cocotools/{py_file}\n"
     if os.path.exists(py_full):
         py_src = open(py_full).read()
-        for candidate in [fname,
-                          fname.replace('insn_parse_', '_parse_'),
-                          fname.replace('insn_resolve_', '_resolve_'),
-                          fname.replace('insn_emit_', '_emit_')]:
-            m = re.search(r'(def ' + re.escape(candidate) + r'\b.*?)(?=\ndef |\Z)',
+        # Generate candidate Python names from the C name
+        candidates = [
+            fname,
+            fname.replace('insn_parse_', '_parse_'),
+            fname.replace('insn_resolve_', '_resolve_'),
+            fname.replace('insn_emit_', '_emit_'),
+            # lw_expr_* -> strip lw_expr_ prefix and add underscore
+            re.sub(r'^lw_expr_', '_', fname),
+            # lw_expr_simplify_l -> _simplify_l (method on Expr class)
+            re.sub(r'^lw_expr_simplify_', '_simplify_', fname),
+            re.sub(r'^lw_expr_parse_', '_parse_', fname),
+            # any remaining lw_expr_ prefix variants
+            re.sub(r'^lw_\w+_', '_', fname),
+        ]
+        for candidate in dict.fromkeys(candidates):  # deduplicate preserving order
+            if not candidate:
+                continue
+            m = re.search(r'(    def ' + re.escape(candidate) + r'\b.*?)(?=\n    def |\nclass |\ndef |\Z)',
                           py_src, re.DOTALL)
+            if not m:
+                m = re.search(r'(def ' + re.escape(candidate) + r'\b.*?)(?=\ndef |\Z)',
+                              py_src, re.DOTALL)
             if m:
                 existing = m.group(1)
                 break
@@ -287,7 +308,7 @@ def make_package(fname, c_rel_path, py_file):
     open(os.path.join(pkg, 'checklist.md'), 'w').write(make_checklist(fname, risks))
     open(os.path.join(pkg, 'existing.py'), 'w').write(
         f"# Current Python translation of {fname}\n# cocotools/{py_file}\n\n{existing}\n")
-    open(os.path.join(pkg, 'brief.md'), 'w').write(make_brief(fname, c_rel_path, py_file, risks))
+    open(os.path.join(pkg, 'brief.md'), 'w').write(make_brief(fname, c_rel_path, py_file, risks, rank=rank))
 
     print(f"  OK  translation_packages/{rank:02d}_{fname}/  "
           f"({risks['lines']} lines, {risks['branches']} branches, {len(risks['gotos'])} gotos)")
