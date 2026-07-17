@@ -436,6 +436,60 @@ BEHAVIOR_TESTS = [
     ("indexed-collapsed-zero-offset",
      "         ORG $3F00\n         LDA ,X\n         RTS\n         END\n",
      False),
+
+    # ── insn_resolve_indexed_aux: added during the 2026-07-17 faithful
+    #    translation audit (translation_packages/03_insn_resolve_indexed_aux).
+    #
+    # These four cover paths through _insn_resolve_indexed_aux that the
+    # existing "indexed-fwdref-16bit" test above does not distinguish,
+    # because that test's forward-referenced value ($1234) genuinely
+    # needs 16 bits regardless of *when* it is decided -- so it can't
+    # tell "correctly computed 16-bit" apart from "always defaults to
+    # 16-bit for any forward reference." The four tests below use small
+    # final values specifically so that a wrong pass-timing/force policy
+    # (i.e. shrinking to the minimal encoding once the symbol becomes
+    # known, instead of staying locked at the size decided when the
+    # value was still unknown) is visible as a byte mismatch.
+
+    # Forward reference whose *final* value (5) would fit the compact
+    # 5-bit postbyte encoding if resolved fresh -- but PRAGMA_FORWARDREFMAX
+    # (on by default in real lwasm; see AsmState.__init__ comment in
+    # cocotools/lwasm_core.py) forces resolution to the 16-bit form
+    # during pass 1, before FWD is known, and insn_resolve_indexed's
+    # `if (l->lint == -1)` guard means that decision is never revisited.
+    # Regression test for the missing PRAGMA_FORWARDREFMAX default,
+    # found and fixed during this audit.
+    ("indexed-fwdref-locks-16bit-not-5bit",
+     "         ORG $3F00\n         LDA FWD,X\n         RTS\nFWD      EQU 5\n         END\n",
+     False),
+
+    # Same mechanism, but the final value (100) would fit the compact
+    # 8-bit postbyte encoding if resolved fresh -- must still lock to
+    # 16-bit, not 8-bit.
+    ("indexed-fwdref-locks-16bit-not-8bit",
+     "         ORG $3F00\n         LDA FWD,X\n         RTS\nFWD      EQU 100\n         END\n",
+     False),
+
+    # A genuinely undefined symbol (never defined anywhere) in indexed
+    # mode. Exercises the final `else: if (!force) return;` branch of
+    # insn_resolve_indexed_aux with force=1 actually reaching the "goto
+    # do16bit" arm and then failing to ever produce complete output --
+    # must error exactly as lwasm does (E_INSTRUCTION_FAILED /
+    # "Undefined symbol"), not silently succeed or crash.
+    ("indexed-undefined-symbol-forced",
+     "         ORG $3F00\n         LDA UNDEF,X\n         RTS\n         END\n",
+     True),
+
+    # n,PCR to a label far enough away (past many NOP instructions) that
+    # its address is still unresolved on the first attempt. Exercises the
+    # `(l->pb & 0x07) == 5` branch's as->pretendmax fudge-factor heuristic
+    # (regfield 5/6 special case within the "e2 not int" path), which is
+    # otherwise never reached by the existing indexed-pcr-relative test
+    # (that test's target is already a resolved literal at parse time).
+    ("indexed-pcr-forward-heuristic",
+     "         ORG $3F00\n         LDA FAR,PCR\n" + "         NOP\n" * 40 +
+     "FAR      RTS\n         END\n",
+     False),
 ]
 
 
@@ -467,6 +521,17 @@ BEHAVIOR_TESTS_6309 = [
     # (0xAF / 0xB0), not the X/Y/U/S-style 0x89/0x99.
     ("indexed-w-16bit-6309",
      "         ORG $3F00\n         LDA 1000,W\n         RTS\n         END\n",
+     False),
+
+    # insn_resolve_indexed_aux audit (translation_packages/03): same
+    # forward-reference lock-to-worst-case behavior as the 6809 X/Y/U/S
+    # tests above, but through the regfield==4 (W) branch, which has its
+    # own opcode pair (0xAF/0xB0) distinct from the 0x89 used by X/Y/U/S.
+    # FWD's final value (5) has no compact W encoding at all (W only has
+    # 0-offset and 16-bit forms) so this also confirms the lock doesn't
+    # accidentally produce the W zero-offset opcode instead.
+    ("indexed-w-fwdref-locks-16bit-6309",
+     "         ORG $3F00\n         LDA FWD,W\n         RTS\nFWD      EQU 5\n         END\n",
      False),
 ]
 

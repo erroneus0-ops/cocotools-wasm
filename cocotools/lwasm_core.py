@@ -41,7 +41,7 @@ from .lwasm_types import (
     # output formats
     OUTPUT_OBJ, OUTPUT_LWMOD,
     # pragma bits
-    PRAGMA_NONE, PRAGMA_6809,
+    PRAGMA_NONE, PRAGMA_6809, PRAGMA_FORWARDREFMAX,
     PRAGMA_NOOUTPUT, PRAGMA_NEWSOURCE, PRAGMA_SYMBOLNOCASE,
     PRAGMA_DOLLARNOTLOCAL, PRAGMA_UNDEFEXTERN, PRAGMA_NOLIST,
     PRAGMA_EXPORT, PRAGMA_CONDUNDEFZERO, PRAGMA_M80EXT,
@@ -447,7 +447,14 @@ class AsmState:
 
         # Flags and pragmas
         self.flags         = 0
-        self.pragmas       = PRAGMA_6809  # default to 6809 mode
+        # C: main.c sets asmstate.pragmas = PRAGMA_FORWARDREFMAX before CLI
+        # parsing ("enable the 'forward reference maximum size' pragma; old
+        # available can be obtained with --pragma=noforwardrefmax"); 6809 vs
+        # 6309 mode is a separate CLI-driven default this class also folds in
+        # here. Omitting PRAGMA_FORWARDREFMAX caused forward-referenced
+        # indexed/gen operands to shrink to their minimal encoding once known,
+        # instead of staying locked at worst-case size the way real lwasm does.
+        self.pragmas       = PRAGMA_6809 | PRAGMA_FORWARDREFMAX  # default to 6809 mode
         self.nowarn_flags  = 0
 
         # Error tracking
