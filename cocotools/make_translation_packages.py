@@ -30,7 +30,7 @@ OUTPUT_DIR = os.path.join(REPO_ROOT, 'translation_packages')
 PRIORITY_FUNCTIONS = [
     ('lw_expr_simplify_l',       'lwtools-4.24/lwlib/lw_expr.c',     'lw_expr.py'),
     ('insn_parse_indexed_aux',   'lwtools-4.24/lwasm/insn_indexed.c', 'insn_funcs.py'),
-    ('insn_resolve_indexed_aux', 'lwtools-4.24/lwasm/insn_gen.c',     'insn_funcs.py'),
+    ('insn_resolve_indexed_aux', 'lwtools-4.24/lwasm/insn_indexed.c', 'insn_funcs.py'),
     ('insn_parse_rlist',         'lwtools-4.24/lwasm/insn_rlist.c',   'insn_funcs.py'),
     ('insn_emit_rlist',          'lwtools-4.24/lwasm/insn_rlist.c',   'insn_funcs.py'),
     ('insn_parse_rtor',          'lwtools-4.24/lwasm/insn_rtor.c',    'insn_funcs.py'),
@@ -53,6 +53,8 @@ def find_function(source, fname):
     Handles both direct definitions and macro-wrapped definitions:
       void insn_parse_rlist(...)  -- direct
       PARSEFUNC(insn_parse_rlist) -- macro (expands to same thing)
+    
+    Skips forward declarations (lines ending with ; that have no body).
     """
     lines = source.split('\n')
     for i, line in enumerate(lines):
@@ -62,6 +64,16 @@ def find_function(source, fname):
         if not (direct or macro):
             continue
         if line and line[0].isspace():
+            continue
+        # Skip forward declarations -- lines that end with ; (no body follows)
+        stripped = line.strip()
+        if stripped.endswith(';'):
+            continue
+        # Also skip if the next non-empty line starts with ; (multi-line declaration)
+        j = i + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        if j < len(lines) and lines[j].strip().startswith(';'):
             continue
         # Find opening brace
         depth = 0
