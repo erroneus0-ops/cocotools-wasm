@@ -26,10 +26,11 @@ from .lw_expr    import Expr, Ptr, TYPE_INT, OPER_PLUS, OPER_MINUS
 from .lwasm_types import (
     PRAGMA_NEWSOURCE, PRAGMA_6809, PRAGMA_AUTOBRANCHLENGTH,
     PRAGMA_FORWARDREFMAX, PRAGMA_OPERANDSIZE, PRAGMA_QRTS, PRAGMA_M80EXT,
+    PRAGMA_PCASPCR, PRAGMA_NOINDEX0TONONE,
     E_OPERAND_BAD, E_IMMEDIATE_INVALID, E_BYTE_OVERFLOW,
     E_EXPRESSION_NOT_RESOLVED, E_EXPRESSION_NOT_CONST, E_REGISTER_BAD,
     E_BITNUMBER_UNRESOLVED, E_BITNUMBER_INVALID, E_IMMEDIATE_UNRESOLVED,
-    E_UNKNOWN_OPERATION,
+    E_UNKNOWN_OPERATION, E_ILL5, E_NW_8,
     W_OPERAND_SIZE,
     lwasm_expr_linelen, lwasm_expr_lineaddr,
 )
@@ -183,8 +184,9 @@ def _insn_parse_gen_aux(as_, cl, p, elen=0):
 
     # ',' or '[' → definitely indexed
     if p.peek() in (',', '['):
-        _parse_indexed_mode(as_, cl, p)
+        cl.lint  = -1
         cl.lint2 = 1
+        insn_parse_indexed_aux(as_, cl, p)
         cl.minlen = _oplen(ops[1]) + 1 + elen
         cl.maxlen = _oplen(ops[1]) + 3 + elen
         _set_len_from_lint2(cl, ops, elen)
@@ -199,8 +201,9 @@ def _insn_parse_gen_aux(as_, cl, p, elen=0):
         # '<' + '<' → indexed (PC-relative or similar)
         if p.peek() == '<':
             p.pos = optr2
-            _parse_indexed_mode(as_, cl, p)
+            cl.lint  = -1
             cl.lint2 = 1
+            insn_parse_indexed_aux(as_, cl, p)
             cl.minlen = _oplen(ops[1]) + 1 + elen
             cl.maxlen = _oplen(ops[1]) + 3 + elen
             return
@@ -223,8 +226,9 @@ def _insn_parse_gen_aux(as_, cl, p, elen=0):
     # If followed by comma, it's indexed
     if p.peek() == ',':
         p.pos = optr2
-        _parse_indexed_mode(as_, cl, p)
+        cl.lint  = -1
         cl.lint2 = 1
+        insn_parse_indexed_aux(as_, cl, p)
         cl.minlen = _oplen(ops[1]) + 1 + elen
         cl.maxlen = _oplen(ops[1]) + 3 + elen
         _set_len_from_lint2(cl, ops, elen)
@@ -271,10 +275,24 @@ def _set_len_from_lint2(cl, ops, elen=0):
 def _insn_resolve_gen_aux(as_, cl, force, elen=0):
     """
     insn_resolve_gen_aux: resolve DIR vs EXT for ambiguous gen-mode operand.
+
+    C's insn_resolve_gen_aux funnels every path (indexed, DP/EXT decision,
+    and the early-return branches) through a shared `out:` label that
+    computes l->len from the now-known lint2/lint. Previously this Python
+    version only computed cl.len via _set_len_from_lint2 for the DIR/EXT
+    branch, returning immediately after the indexed branch instead. That
+    was invisible while the ad hoc indexed-mode parser eagerly decided
+    offset size at parse time (so cl.len was already set by then and this
+    function's indexed branch was always a no-op). Now that
+    insn_parse_indexed_aux faithfully defers undecided offset sizes to
+    this resolve step, the missing out:-equivalent call must be added so
+    cl.len actually gets set once the indexed offset is resolved.
     """
     ops = _ops(cl)
     if cl.lint2 == 1:
-        _insn_resolve_indexed_aux(as_, cl, force, elen); return
+        _insn_resolve_indexed_aux(as_, cl, force, elen)
+        _set_len_from_lint2(cl, ops, elen)
+        return
     if cl.lint2 != -1: return
 
     e = cl.fetch_expr(0)
@@ -478,222 +496,579 @@ def insn_emit_gen32(as_, cl):
 #   n,PC / n,PCR PC-relative            pb = 0x8C(8-bit) / 0x8D(16-bit)
 #   [,R]  [n,R]  indirect forms         pb |= 0x10  (for 16-bit offsets only for post-inc/dec)
 
-_IDX_REG_BITS = {'X': 0x00, 'Y': 0x20, 'U': 0x40, 'S': 0x60}
-_IDX_ACC_BITS = {'A': 0x86, 'B': 0x85, 'D': 0x8B}
-# Actually: A,R = 0x86, B,R = 0x85, D,R = 0x8B  for X base;
-# For Y, U, S base: add the register bits
+_REGS9 = "X  Y  U  S     PCRPC "   # 6809: reglist index 4 (W) unavailable
+_REGS  = "X  Y  U  S  W  PCRPC "   # 6309: reglist index 4 = W
 
-def _parse_indexed_mode(as_, cl, p):
+
+def _skip_to_next_token(cl, p):
     """
-    Parse indexed addressing mode, set cl.pb and cl.lint (offset size).
-    cl.lint values: 0=no offset byte, 1=8-bit, 2=16-bit, 3=5-bit constant
+    lwasm_skip_to_next_token(cl, p)  (lwasm.c):
+    Only active under PRAGMA_NEWSOURCE -- skips whitespace in place.
     """
-    indirect = False
-
-    if p.peek() == '[':
-        indirect = True
-        p.advance()
-
-    # Check for accumulator offset: A,R / B,R / D,R
-    saved_pos = p.pos
-    acc_char  = p.peek().upper() if p.peek() else ''
-    if acc_char in ('A', 'B', 'D'):
-        p.advance()
-        if p.peek() == ',':
+    if curpragma(cl, PRAGMA_NEWSOURCE):
+        while p.peek() and p.peek().isspace():
             p.advance()
-            reg_bits = _get_idx_reg_bits(cl, as_, p)
-            if reg_bits is not None:
-                acc_map = {'A': 0x86, 'B': 0x85, 'D': 0x8B}
-                pb = reg_bits | acc_map[acc_char]
-                if indirect: pb |= 0x10
-                cl.pb   = pb
-                cl.lint = 0
-                if indirect:
-                    if p.peek() == ']': p.advance()
-                return
-        p.pos = saved_pos  # backtrack
 
-    # Check for pre-decrement: ,-R or ,--R
-    if p.peek() == ',':
+
+# ---------------------------------------------------------------------------
+# FUNCTION: insn_parse_indexed_aux
+# SOURCE:   lwtools-4.24/lwasm/insn_indexed.c lines 39-464
+# TRANSLATED: 2026-07-17
+#
+# Pre-translation checklist results:
+#   Integer width: none -- all values are postbyte-range ints (0-0xFF),
+#       safe by construction (see TRANSLATION_GUIDE "Known Safe Patterns").
+#   Division/modulo: none.
+#   char **p: yes -- p is a Ptr, shared with the caller (both call sites
+#       already hold the same Ptr instance the caller's cursor advances).
+#   goto: none in this function.
+#   char signedness: safe -- lwasm only ever handles ASCII source text.
+#   Argument order: N/A -- no argument list doubles as a mutation site.
+#   Promotion: none needed -- Python ints are already unbounded/exact.
+#   Complement: none.
+#   lookupreg: yes -- AsmState.lookupreg3(reglist, p) for the "expr,REG"
+#       form (this is the *only* place in this function that accepts PC
+#       and PCR as well as X/Y/U/S/W; the other two register switches in
+#       this function are hand-rolled because C hand-rolls them too --
+#       they intentionally accept a smaller register set).
+#
+# Interaction risks identified:
+#   - The lookahead pattern `tstr = *p + 1; skip_to_next_token(l, &tstr);
+#     if (*tstr == ',') ...` creates a SEPARATE local cursor for peeking
+#     ahead without committing the advance unless the comma actually
+#     matches. This is the opposite of the usual "share the Ptr" rule --
+#     here C is deliberately *not* aliasing pointers, so the Python
+#     translation must not share the Ptr instance for tstr either.
+#     Mitigation: construct a fresh `Ptr(p.s, p.pos + 1)` for each
+#     lookahead, and only copy its position back into `p` if the comma
+#     is actually found (mirroring `*p = tstr + 1`).
+#   - `l -> lint` is read before being written in several branches (the
+#     "expr,REG" path relies on l->lint carrying over from the possible
+#     '<'/'<<'/'>' prefix parse earlier in *this same call*, or, if no
+#     prefix was seen, on whatever the caller preset it to). Both real
+#     call sites (insn_gen.c's `goto indexed:` block and insn_indexed.c's
+#     PARSEFUNC(insn_parse_indexed)) set `l->lint = -1` immediately
+#     before calling this function -- so the Python call sites must do
+#     the same, or the "undetermined register-offset marker" path below
+#     will read a stale/wrong value.
+#   - The final marker `l->pb = (indir*0x80) | rn | (f0*0x40)` (used when
+#     the offset size could not be decided here) is a *different* bit
+#     layout than the fully-resolved postbyte forms produced elsewhere in
+#     this function (register field unshifted in bits 0-2, indirect at
+#     bit 7, not bit 4). insn_resolve_indexed_aux is the only consumer of
+#     this marker and must decode it with the matching bit layout.
+#
+# Mitigations applied:
+#   - Fresh Ptr per lookahead (see above), copied into `p` only on match.
+#   - Both callers in this module now explicitly set cl.lint = -1 before
+#     invoking insn_parse_indexed_aux, matching both real C call sites.
+#   - insn_resolve_indexed_aux (module-private _insn_resolve_indexed_aux)
+#     was re-translated in this same session to decode the marker layout
+#     this function actually produces -- see its own header comment.
+# ---------------------------------------------------------------------------
+
+def insn_parse_indexed_aux(as_, cl, p):
+    """
+    Faithful translation of insn_parse_indexed_aux (insn_indexed.c 39-464).
+
+    Parses one indexed-addressing operand starting at Ptr p. Side effects
+    (matching the C out-parameter line_t *l):
+        cl.pb    -- either a fully-resolved postbyte, or (when the offset
+                    size can't be decided yet) a marker byte consumed by
+                    _insn_resolve_indexed_aux.
+        cl.lint  -- 0/1/2/3 = decided (no-offset/8-bit/16-bit/5-bit), or
+                    left at -1 (or whatever the caller preset) when still
+                    undetermined.
+        p        -- advanced past the consumed operand text.
+    Errors are registered on cl via as_.register_error and the function
+    returns (void, like the C original); every error path in the C is an
+    immediate return with no further side effects, reproduced here as an
+    early Python `return`.
+    """
+    if curpragma(cl, PRAGMA_6809):
+        reglist = _REGS9
+    else:
+        reglist = _REGS
+
+    indir = 0
+
+    # is it indirect?
+    if p.peek() == '[':
+        indir = 1
         p.advance()
+
+    _skip_to_next_token(cl, p)
+
+    if p.peek() == ',':
+        incdec = 0
+        # pre-dec, post-inc, or no-offset mode
+        p.advance()
+        _skip_to_next_token(cl, p)
         if p.peek() == '-':
+            incdec = -1
             p.advance()
             if p.peek() == '-':
+                incdec = -2
                 p.advance()
-                reg_bits = _get_idx_reg_bits(cl, as_, p)
-                if reg_bits is None: return
-                pb = reg_bits | 0x83   # ,--R pre-decrement 2
-                if indirect: pb |= 0x10
-                cl.pb   = pb
-                cl.lint = 0
-                if indirect and p.peek() == ']': p.advance()
+            _skip_to_next_token(cl, p)
+
+        # allowed registers here: X, Y, U, S, or W (6309) -- NOT PC/PCR
+        c = p.peek()
+        if c in ('x', 'X'):
+            rn = 0
+        elif c in ('y', 'Y'):
+            rn = 1
+        elif c in ('u', 'U'):
+            rn = 2
+        elif c in ('s', 'S'):
+            rn = 3
+        elif c in ('w', 'W'):
+            if curpragma(cl, PRAGMA_6809):
+                as_.register_error(cl, E_OPERAND_BAD)
                 return
-            else:
-                reg_bits = _get_idx_reg_bits(cl, as_, p)
-                if reg_bits is None: return
-                # lwasm unconditionally blocks single pre-decrement indirect [,-R]
-                # It exists on some 6809 silicon but lwasm errors regardless of mode.
-                # Direct form ,-R is valid. Indirect [,-R] is not.
-                if indirect:
-                    as_.register_error(cl, E_OPERAND_BAD)
-                    return
-                pb = reg_bits | 0x82   # ,-R  pre-decrement 1
-                cl.pb   = pb
-                cl.lint = 0
-                return
-        # zero offset, no expression: ,R or ,R+ or ,R++
-        reg_bits = _get_idx_reg_bits(cl, as_, p)
-        if reg_bits is None:
-            as_.register_error(cl, E_OPERAND_BAD); return
+            rn = 4
+        else:
+            as_.register_error(cl, E_OPERAND_BAD)
+            return
+        p.advance()
+        _skip_to_next_token(cl, p)
+
         if p.peek() == '+':
+            if incdec != 0:
+                as_.register_error(cl, E_OPERAND_BAD)
+                return
+            incdec = 1
             p.advance()
             if p.peek() == '+':
+                incdec = 2
                 p.advance()
-                pb = reg_bits | 0x81   # ,R++ post-increment 2
+            _skip_to_next_token(cl, p)
+
+        if indir:
+            if p.peek() != ']':
+                as_.register_error(cl, E_OPERAND_BAD)
+                return
+            p.advance()
+
+        if indir or rn == 4:
+            if incdec == 1 or incdec == -1:
+                as_.register_error(cl, E_OPERAND_BAD)
+                return
+
+        if rn == 4:
+            if indir:
+                if incdec == 0:
+                    i = 0x90
+                elif incdec == -2:
+                    i = 0xF0
+                else:
+                    i = 0xD0
             else:
-                # lwasm blocks single post-increment indirect [,R+]
-                if indirect:
+                if incdec == 0:
+                    i = 0x8F
+                elif incdec == -2:
+                    i = 0xEF
+                else:
+                    i = 0xCF
+        else:
+            if incdec == 0:
+                i = 0x84
+            elif incdec == 1:
+                i = 0x80
+            elif incdec == 2:
+                i = 0x81
+            elif incdec == -1:
+                i = 0x82
+            elif incdec == -2:
+                i = 0x83
+            i = (rn << 5) | i | (indir << 4)
+
+        cl.pb   = i
+        cl.lint = 0
+        return
+
+    # accumulator-offset forms: A,R  B,R  D,R  (and 6309 E,R  F,R  W,R)
+    i = p.peek().upper() if p.peek() else ''
+    if (i in ('A', 'B', 'D')) or (not curpragma(cl, PRAGMA_6809) and i in ('E', 'F', 'W')):
+        # Lookahead only -- a SEPARATE cursor, not shared with p, matching
+        # C's `tstr = *p + 1` local pointer that is only copied back into
+        # *p if the comma actually matches (see checklist note above).
+        tstr = Ptr(p.s, p.pos + 1)
+        _skip_to_next_token(cl, tstr)
+        if tstr.peek() == ',':
+            p.pos = tstr.pos + 1
+            _skip_to_next_token(cl, p)
+            c = p.peek()
+            if c in ('x', 'X'):
+                rn = 0
+            elif c in ('y', 'Y'):
+                rn = 1
+            elif c in ('u', 'U'):
+                rn = 2
+            elif c in ('s', 'S'):
+                rn = 3
+            else:
+                as_.register_error(cl, E_OPERAND_BAD)
+                return
+            p.advance()
+            _skip_to_next_token(cl, p)
+            if indir:
+                if p.peek() != ']':
                     as_.register_error(cl, E_OPERAND_BAD)
                     return
-                pb = reg_bits | 0x80   # ,R+  post-increment 1
-        else:
-            pb = reg_bits | 0x84       # ,R   zero-offset
-        if indirect: pb |= 0x10
-        cl.pb   = pb
-        cl.lint = 0
-        if indirect and p.peek() == ']': p.advance()
-        return
+                p.advance()
 
-    # expr,R form
-    expr = as_.parse_expr(p)
-    if not expr:
-        as_.register_error(cl, E_OPERAND_BAD); return
-    # Reduce immediately so negative constants (-5, -100 etc.) become TYPE_INT
-    # Without this, -5 stays as OPER_NEG(5) and gets misclassified as 16-bit
-    as_.reduce_expr(expr)
-    cl.save_expr(0, expr)
+            if i == 'A':
+                i = 0x86
+            elif i == 'B':
+                i = 0x85
+            elif i == 'D':
+                i = 0x8B
+            elif i == 'E':
+                i = 0x87
+            elif i == 'F':
+                i = 0x8A
+            elif i == 'W':
+                i = 0x8E
 
-    # [expr] with no register = extended indirect (post-byte 0x9F)
-    if indirect and p.peek() == ']':
+            cl.pb   = i | (indir << 4) | (rn << 5)
+            cl.lint = 0
+            return
+        # else: not actually an accumulator-offset (e.g. a label starting
+        # with A/B/D/E/F/W) -- fall through to expression parsing below,
+        # exactly as C does (p was never advanced, only the local tstr).
+
+    # we have the "expression" types now
+    if p.peek() == '<':
+        cl.lint = 1
         p.advance()
-        cl.pb   = 0x9F
-        cl.lint = 2   # 16-bit address
+        if p.peek() == '<':
+            cl.lint = 3
+            p.advance()
+            if indir:
+                as_.register_error(cl, E_ILL5)
+                return
+    elif p.peek() == '>':
+        cl.lint = 2
+        p.advance()
+
+    _skip_to_next_token(cl, p)
+
+    f0 = 0
+    if p.peek() == '0':
+        tstr = Ptr(p.s, p.pos + 1)
+        _skip_to_next_token(cl, tstr)
+        if tstr.peek() == ',':
+            f0 = 1
+
+    # now we have to evaluate the expression
+    e = as_.parse_expr(p)
+    if not e:
+        as_.register_error(cl, E_OPERAND_BAD)
         return
+    cl.save_expr(0, e)
 
     if p.peek() != ',':
-        as_.register_error(cl, E_OPERAND_BAD); return
-    p.advance()
-
-    # Check for PC-relative: n,PC or n,PCR
-    if p.peek() and p.s[p.pos:p.pos+2].upper() == 'PC':
-        p.advance(2)
-        if p.peek() and p.peek().upper() == 'R': p.advance()
-        # PC-relative offset = target - (addr + linelen), same as relgen
-        pb = 0x8D  # 16-bit PC-relative
-        if indirect: pb |= 0x10
-        cl.pb   = pb
-        cl.lint = 2   # 16-bit offset
-
-        # Build offset expression: expr - LINELEN(cl) - addr(cl)
-        le = Expr.special(lwasm_expr_linelen, cl)
-        e1 = Expr.oper(OPER_MINUS, expr, le)
-        e2 = Expr.oper(OPER_MINUS, e1, cl.addr)
-        cl.save_expr(0, e2)
-
-        if indirect and p.peek() == ']': p.advance()
+        # if no comma, we have extended indirect
+        if cl.lint == 1 or p.peek() != ']':
+            as_.register_error(cl, E_OPERAND_BAD)
+            return
+        p.advance()
+        cl.lint = 2
+        cl.pb   = 0x9F
         return
 
-    reg_bits = _get_idx_reg_bits(cl, as_, p)
-    if reg_bits is None:
-        as_.register_error(cl, E_OPERAND_BAD); return
-
-    # Determine offset size
-    if expr.istype(TYPE_INT):
-        v = expr.intval()
-        if not indirect and -16 <= v <= 15:
-            pb   = reg_bits | (v & 0x1F) & 0xFF   # 5-bit, bit7=0
-            cl.pb   = pb
-            cl.lint = 3   # 5-bit constant
-        elif -128 <= v <= 127:
-            pb   = reg_bits | 0x88  # 8-bit offset, bit7=1
-            if indirect: pb |= 0x10
-            cl.pb   = pb
-            cl.lint = 1
-        else:
-            pb   = reg_bits | 0x89  # 16-bit offset, bit7=1
-            if indirect: pb |= 0x10
-            cl.pb   = pb
-            cl.lint = 2
-    else:
-        # Forward ref: use 16-bit (conservative)
-        pb   = reg_bits | 0x89
-        if indirect: pb |= 0x10
-        cl.pb   = pb
-        cl.lint = 2
-
-    if indirect and p.peek() == ']': p.advance()
-
-
-def _get_idx_reg_bits(cl, as_, p):
-    """Parse register name X/Y/U/S/PC and return base bits, or None."""
-    # 2-char: PC
-    if p.pos+1 < len(p.s) and p.s[p.pos:p.pos+2].upper() == 'PC':
-        p.advance(2)
-        if p.peek() and p.peek().upper() == 'R': p.advance()
-        return None   # handled separately by caller
-    reg = p.peek().upper() if p.peek() else ''
-    bits = _IDX_REG_BITS.get(reg)
-    if bits is None:
-        as_.register_error(cl, E_REGISTER_BAD)
-        return None
     p.advance()
-    return bits
+    _skip_to_next_token(cl, p)
 
+    # now get the register
+    rn = AsmState.lookupreg3(reglist, p)
+    if rn < 0:
+        as_.register_error(cl, E_REGISTER_BAD)
+        return
+
+    if indir:
+        if p.peek() != ']':
+            as_.register_error(cl, E_OPERAND_BAD)
+            return
+        else:
+            p.advance()
+
+    if rn <= 3:
+        # X,Y,U,S
+        if cl.lint == 1:
+            cl.pb = 0x88 | (rn << 5) | (0x10 if indir else 0)
+            return
+        elif cl.lint == 2:
+            cl.pb = 0x89 | (rn << 5) | (0x10 if indir else 0)
+            return
+        elif cl.lint == 3:
+            cl.pb = (rn << 5)
+            # NOTE: no return here -- matches C exactly. Execution falls
+            # through to the bottom of the function, where the final
+            # `if (l->lint != 3)` guard prevents cl.pb being overwritten;
+            # the 5-bit offset itself gets merged into cl.pb later, at
+            # emit time (see _insn_emit_gen_aux / insn_emit_indexed).
+
+    # nnnn,W is only 16 bit (or 0 bit)
+    if rn == 4:
+        if cl.lint == 1:
+            as_.register_error(cl, E_NW_8)
+            return
+        elif cl.lint == 3:
+            as_.register_error(cl, E_ILL5)
+            return
+        if cl.lint == 2:
+            cl.pb   = 0xb0 if indir else 0xaf
+            cl.lint = 2
+            return
+        cl.pb = (0x80 * indir) | rn
+        return
+
+    # PCR? then we have PC relative addressing (like B??, LB??)
+    if rn == 5 or (rn == 6 and curpragma(cl, PRAGMA_PCASPCR)):
+        # e - (addr + linelen) => e - addr - linelen
+        e2 = Expr.special(lwasm_expr_linelen, cl)
+        e1 = Expr.oper(OPER_MINUS, e, e2)
+        e2 = Expr.oper(OPER_MINUS, e1, cl.addr)
+        cl.save_expr(0, e2)
+        if cl.lint == 1:
+            cl.pb = 0x9C if indir else 0x8C
+            return
+        elif cl.lint == 2:
+            cl.pb = 0x9D if indir else 0x8D
+            return
+        elif cl.lint == 3:
+            as_.register_error(cl, E_ILL5)
+            return
+
+    if rn == 6:
+        if cl.lint == 1:
+            cl.pb = 0x9C if indir else 0x8C
+            return
+        elif cl.lint == 2:
+            cl.pb = 0x9D if indir else 0x8D
+            return
+        elif cl.lint == 3:
+            as_.register_error(cl, E_ILL5)
+            return
+
+    if cl.lint != 3:
+        cl.pb = (indir * 0x80) | rn | (f0 * 0x40)
+
+
+# ---------------------------------------------------------------------------
+# FUNCTION: insn_resolve_indexed_aux  (module-private: _insn_resolve_indexed_aux)
+# SOURCE:   lwtools-4.24/lwasm/insn_indexed.c lines 479-707 (approx.)
+# TRANSLATED / RE-TRANSLATED: 2026-07-17
+#
+# Not the primary subject of this translation package (that is package
+# 03), but re-translated here as required glue: this is the *only*
+# consumer of the "undetermined offset" marker byte that the newly
+# faithful insn_parse_indexed_aux (above) writes into cl.pb, and the
+# marker's bit layout changed as a direct result of that translation
+# (register field now unshifted in bits 0-2, indirect at bit 7, explicit
+# "f0" zero-offset flag at bit 6 -- see insn_parse_indexed_aux's header
+# comment). The previous hand-rolled resolve helper decoded a different,
+# incompatible layout (register pre-shifted into bits 5-6, indirect at
+# bit 4) that matched the previous hand-rolled parse helper. Plugging in
+# a faithful parser without also fixing this decoder would silently
+# corrupt every forward-referenced indexed operand. A full line-by-line
+# audit of this function (matching package 02's process: checklist,
+# independent translation, comparison, tests) is still recommended as
+# follow-up under package 03 -- this translation is a faithful, complete
+# transliteration of the C but has not been through that separate audit
+# process.
+# ---------------------------------------------------------------------------
 
 def _insn_resolve_indexed_aux(as_, cl, force, elen=0):
-    """Resolve indexed mode: try to pick optimal offset size."""
-    e = cl.fetch_expr(0)
-    if not e: return
-    # C: if (l->lint != -1) return;  -- only resolve if still undecided
-    if cl.lint != -1: return
+    """Faithful translation of insn_resolve_indexed_aux (insn_indexed.c)."""
+    if cl.len != -1:
+        return
 
-    as_.reduce_expr(e)
-    if e.istype(TYPE_INT):
-        v = e.intval()
-        reg_base = cl.pb & 0x60
-        indirect = cl.pb & 0x10
-        if not indirect and -16 <= v <= 15:
-            cl.pb   = reg_base | (v & 0x1F)
-            cl.lint = 3
-        elif -128 <= v <= 127:
-            cl.pb   = reg_base | 0x88 | indirect
-            cl.lint = 1
-        else:
-            cl.pb   = reg_base | 0x89 | indirect
-            cl.lint = 2
+    e = cl.fetch_expr(0)
+
+    if not (e and e.istype(TYPE_INT)):
+        # temporarily set the instruction length to see if we get a
+        # constant for our expression; if so, we can select an
+        # instruction size
+        e2 = e.copy() if e else None
         ops = _ops(cl)
-        cl.len = _oplen(ops[1]) + 1 + cl.lint + elen if cl.lint != 3 else _oplen(ops[1]) + 1 + elen
+        cl.len = _oplen(ops[0]) + elen + 2
+        if e2 is not None:
+            as_.reduce_expr(e2)
+        cl.len = -1
+
+        regfield = cl.pb & 0x07
+        indir    = cl.pb & 0x80
+        f0       = cl.pb & 0x40
+
+        if e2 is not None and e2.istype(TYPE_INT):
+            v = e2.intval()
+            if v == 0 and not curpragma(cl, PRAGMA_NOINDEX0TONONE) and regfield <= 4:
+                if regfield < 4:
+                    pb = 0x84 | ((cl.pb & 0x03) << 5) | (0x10 if indir else 0)
+                else:
+                    pb = 0x90 if indir else 0x8F
+                cl.pb   = pb
+                cl.lint = 0
+                return
+            elif v < -128 or v > 127:
+                cl.lint = 2
+                if regfield in (0, 1, 2, 3):
+                    pb = 0x89 | ((cl.pb & 0x03) << 5) | (0x10 if indir else 0)
+                elif regfield == 4:
+                    pb = 0xB0 if indir else 0xAF
+                else:
+                    pb = 0x9D if indir else 0x8D
+                cl.pb = pb
+                return
+            elif indir or regfield > 3 or v < -16 or v > 15:
+                cl.lint = 1
+                if regfield in (0, 1, 2, 3):
+                    pb = 0x88 | ((cl.pb & 0x03) << 5) | (0x10 if indir else 0)
+                elif regfield == 4:
+                    if v == 0 and not (curpragma(cl, PRAGMA_NOINDEX0TONONE) or f0):
+                        pb = 0x90 if indir else 0x8F
+                        cl.lint = 0
+                    else:
+                        pb = 0xB0 if indir else 0xAF
+                        cl.lint = 2
+                else:
+                    pb = 0x9C if indir else 0x8C
+                cl.pb = pb
+                return
+            else:
+                cl.lint = 0
+                if v == 0 and not (curpragma(cl, PRAGMA_NOINDEX0TONONE) or f0):
+                    pb = ((cl.pb & 0x03) << 5) | 0x84
+                else:
+                    pb = ((cl.pb & 0x03) << 5) | (v & 0x1F)
+                cl.pb = pb
+                return
+        else:
+            if regfield in (5, 6):
+                # heuristic fudge-factor pass; see C comment
+                saved = as_.pretendmax
+                as_.pretendmax = 1
+                if e2 is not None:
+                    as_.reduce_expr(e2)
+                as_.pretendmax = saved
+                if e2 is not None and e2.istype(TYPE_INT):
+                    v = e2.intval()
+                    if -100 <= v <= 100:
+                        cl.lint = 1
+                        cl.pb   = 0x9C if indir else 0x8C
+                        return
+        # falls through to the main branch below, exactly as C does
+
+    if e and e.istype(TYPE_INT):
+        v = e.intval()
+        regfield = cl.pb & 0x07
+        indir    = cl.pb & 0x80
+        f0       = cl.pb & 0x40
+
+        if v == 0 and not curpragma(cl, PRAGMA_NOINDEX0TONONE) and regfield <= 4 and f0 == 0:
+            if regfield < 4:
+                pb = 0x84 | ((cl.pb & 0x03) << 5) | (0x10 if indir else 0)
+            else:
+                pb = 0x90 if indir else 0x8F
+            cl.pb   = pb
+            cl.lint = 0
+            return
+        elif v < -128 or v > 127:
+            cl.lint = 2
+            if regfield in (0, 1, 2, 3):
+                pb = 0x89 | ((cl.pb & 0x03) << 5) | (0x10 if indir else 0)
+            elif regfield == 4:
+                pb = 0xB0 if indir else 0xAF
+            else:
+                pb = 0x9D if indir else 0x8D
+            cl.pb = pb
+            return
+        elif indir or regfield > 3 or v < -16 or v > 15:
+            cl.lint = 1
+            if regfield in (0, 1, 2, 3):
+                pb = 0x88 | ((cl.pb & 0x03) << 5) | (0x10 if indir else 0)
+            elif regfield == 4:
+                if v == 0 and not (curpragma(cl, PRAGMA_NOINDEX0TONONE) or f0):
+                    pb = 0x90 if indir else 0x8F
+                    cl.lint = 0
+                else:
+                    pb = 0xB0 if indir else 0xAF
+                    cl.lint = 2
+            else:
+                pb = 0x9C if indir else 0x8C
+            cl.pb = pb
+            return
+        else:
+            cl.lint = 0
+            if v == 0 and not (curpragma(cl, PRAGMA_NOINDEX0TONONE) or f0):
+                pb = ((cl.pb & 0x03) << 5) | 0x84
+            else:
+                pb = ((cl.pb & 0x03) << 5) | (v & 0x1F)
+            cl.pb = pb
+            return
+    else:
+        if not force:
+            return
+        cl.lint  = 2
+        regfield = cl.pb & 0x07
+        indir    = cl.pb & 0x80
+        if regfield in (0, 1, 2, 3):
+            pb = 0x89 | ((cl.pb & 0x03) << 5) | (0x10 if indir else 0)
+        elif regfield == 4:
+            pb = 0xB0 if indir else 0xAF
+        else:
+            pb = 0x9D if indir else 0x8D
+        cl.pb = pb
+        return
 
 
 def insn_parse_indexed(as_, cl, operand):
-    """insn_parse_indexed: LEA instructions — pure indexed mode."""
+    """
+    insn_parse_indexed (LEA instructions) -- PARSEFUNC wrapper, insn_indexed.c:
+        l -> lint = -1;
+        insn_parse_indexed_aux(as, l, p);
+        if (l -> lint != -1) {
+            if (l -> lint == 3) l->len = OPLEN(ops[0]) + 1;
+            else                l->len = OPLEN(ops[0]) + l->lint + 1;
+        }
+    Note: real C does NOT set minlen/maxlen here (unlike the general
+    gen_aux indexed path) -- matched faithfully; those fields are unused
+    elsewhere in this codebase (grep confirms no reader in passes.py /
+    pass1.py), so this is a safe, faithful correction from the previous
+    ad hoc version, which had set them unconditionally.
+    """
     p = Ptr(operand)
     cl.lint  = -1
     cl.lint2 = 1
-    _parse_indexed_mode(as_, cl, p)
-    ops = _ops(cl)
-    cl.minlen = _oplen(ops[0]) + 1
-    cl.maxlen = _oplen(ops[0]) + 3
-    if cl.lint == 0 or cl.lint == 3:
-        cl.len = _oplen(ops[0]) + 1
-    elif cl.lint == 1:
-        cl.len = _oplen(ops[0]) + 2
-    elif cl.lint == 2:
-        cl.len = _oplen(ops[0]) + 3
+    insn_parse_indexed_aux(as_, cl, p)
+    if cl.lint != -1:
+        ops = _ops(cl)
+        if cl.lint == 3:
+            cl.len = _oplen(ops[0]) + 1
+        else:
+            cl.len = _oplen(ops[0]) + cl.lint + 1
     return p.remaining()
 
 def insn_resolve_indexed(as_, cl, force):
-    _insn_resolve_indexed_aux(as_, cl, force)
+    """
+    RESOLVEFUNC(insn_resolve_indexed), insn_indexed.c:
+        if (l -> lint == -1) insn_resolve_indexed_aux(as, l, force, 0);
+        if (l -> lint != -1 && l -> pb != -1) {
+            if (l -> lint == 3) l->len = OPLEN(ops[0]) + 1;
+            else                l->len = OPLEN(ops[0]) + l->lint + 1;
+        }
+    """
+    if cl.lint == -1:
+        _insn_resolve_indexed_aux(as_, cl, force, 0)
+    if cl.lint != -1 and cl.pb != -1:
+        ops = _ops(cl)
+        if cl.lint == 3:
+            cl.len = _oplen(ops[0]) + 1
+        else:
+            cl.len = _oplen(ops[0]) + cl.lint + 1
 
 def insn_emit_indexed(as_, cl):
     ops = _ops(cl)
@@ -712,6 +1087,7 @@ def insn_emit_indexed(as_, cl):
         cl.emitexpr(e, 1)
     elif cl.lint == 2 and e:
         cl.emitexpr(e, 2)
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

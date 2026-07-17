@@ -387,6 +387,87 @@ BEHAVIOR_TESTS = [
     ("multi-org",
      "         ORG $3F00\n         LDA #$01\n         ORG $4000\n         LDA #$02\n         END\n",
      False),
+
+    # ── insn_parse_indexed_aux: added during the 2026-07-17 faithful
+    #    translation audit (translation_packages/02_insn_parse_indexed_aux) ──
+    # (6809-mode entries only -- see BEHAVIOR_TESTS_6309 below for the
+    #  6309-only W-register cases, which must always run in 6309 mode
+    #  regardless of the CLI's default --6809/--6309 selection.)
+
+    # Forward reference (label defined after use) resolving to an
+    # out-of-8-bit-range value -- exercises the deferred-resolve marker
+    # path (cl.lint left at -1 by insn_parse_indexed_aux; decided later
+    # by _insn_resolve_indexed_aux) rather than the immediate encoding
+    # decided when the value is already known at parse time.
+    ("indexed-fwdref-16bit",
+     "         ORG $3F00\n         LDA FWDLABEL,X\n         RTS\nFWDLABEL EQU $1234\n         END\n",
+     False),
+
+    # n,PCR -- true PC-relative addressing; the offset expression is
+    # adjusted for (target - (addr + linelen)) before being saved.
+    ("indexed-pcr-relative",
+     "         ORG $3F00\n         LDA 10,PCR\n         RTS\n         END\n",
+     False),
+
+    # n,PC (no R) -- PC used as a plain index register: same postbyte
+    # opcodes as PCR but WITHOUT the relative-offset expression rewrite,
+    # so the literal operand value is emitted unchanged. This is the
+    # `rn == 6` (not `rn == 5 or PCASPCR`) branch.
+    ("indexed-pc-plain-register",
+     "         ORG $3F00\n         LDA 10,PC\n         RTS\n         END\n",
+     False),
+
+    # [<<n,X] -- forcing 5-bit offset AND indirect in the same operand is
+    # illegal (checked immediately after the second '<' is consumed, only
+    # when the indirect flag is already set).
+    ("indexed-illegal-5bit-indirect",
+     "         ORG $3F00\n         LDA [<<5,X]\n         RTS\n         END\n",
+     True),
+
+    # Explicit "0,X" vs plain ",X" -- these must NOT produce the same
+    # postbyte. Writing the offset "0" explicitly sets the f0 flag, which
+    # blocks collapsing to the dedicated zero-offset opcode (0x84) and
+    # instead uses the plain 5-bit encoding with offset literally 0
+    # (0x00). Regression test for the f0 flag, which the previous ad hoc
+    # translation did not implement at all.
+    ("indexed-explicit-zero-offset",
+     "         ORG $3F00\n         LDA 0,X\n         RTS\n         END\n",
+     False),
+    ("indexed-collapsed-zero-offset",
+     "         ORG $3F00\n         LDA ,X\n         RTS\n         END\n",
+     False),
+]
+
+
+# ── 6309-only behavioral tests ────────────────────────────────────────────────
+# These exercise the rn==4 (W register) branch of insn_parse_indexed_aux,
+# which is only reachable when PRAGMA_6809 is off. They always assemble in
+# 6309 mode regardless of the --6309 CLI flag, since BEHAVIOR_TESTS above
+# (and the harness generally) assembles its whole list in one mode at a time
+# selected by that single flag, and W is illegal input under PRAGMA_6809.
+
+BEHAVIOR_TESTS_6309 = [
+    # 6309 W-register indexed forms: zero-offset, post-inc-2, pre-dec-2,
+    # and their indirect equivalents -- rn==4 is a wholly separate branch
+    # in insn_parse_indexed_aux with its own fixed opcodes (not derived
+    # by shifting a register number the way X/Y/U/S are).
+    ("indexed-w-register-forms-6309",
+     "         ORG $3F00\n         LDA ,W\n         LDA ,W++\n"
+     "         LDA ,--W\n         LDA [,W]\n         LDA [,W++]\n"
+     "         RTS\n         END\n",
+     False),
+
+    # n,W forced to 8-bit ('<' prefix) is illegal -- W has no 8-bit
+    # offset form, only 0-bit (collapsed) or 16-bit.
+    ("indexed-w-forced-8bit-illegal-6309",
+     "         ORG $3F00\n         LDA <5,W\n         RTS\n         END\n",
+     True),
+
+    # n,W with a large value -- must pick the 16-bit W-specific opcodes
+    # (0xAF / 0xB0), not the X/Y/U/S-style 0x89/0x99.
+    ("indexed-w-16bit-6309",
+     "         ORG $3F00\n         LDA 1000,W\n         RTS\n         END\n",
+     False),
 ]
 
 
@@ -454,6 +535,20 @@ STRUCTURAL_TESTS = [
     ("struct-extended-indirect",
      "         ORG $3F00\nTEST     LDA   [$1234]\n         END\n",
      {'len': 4, 'pb': 0x9F, 'lint': 2}),
+
+    # f0 flag: explicit "0,X" must NOT collapse to the dedicated
+    # zero-offset opcode (0x84) -- it must use the plain 5-bit encoding
+    # with the offset literally 0 (0x00), post-resolve lint == 0 ("0
+    # extra bytes needed", not a leftover 5-bit-forced sentinel).
+    ("struct-indexed-explicit-zero-f0",
+     "         ORG $3F00\nTEST     LDA   0,X\n         END\n",
+     {'len': 2, 'pb': 0x00, 'lint': 0}),
+
+    # n,PC (no R): same opcode family as PCR but resolved as a literal
+    # register-indexed value, not a relative offset.
+    ("struct-indexed-pc-plain-register",
+     "         ORG $3F00\nTEST     LDA   10,PC\n         END\n",
+     {'len': 3, 'pb': 0x8C, 'lint': 1}),
 
     ("struct-pshs-d",
      "         ORG $3F00\nTEST     PSHS  D\n         END\n",
@@ -699,15 +794,19 @@ def run_structural_tests(mode6309=False, verbose=False):
     return failed == 0
 
 
-def run_behavior_tests(mode6309=False, verbose=False):
+def run_behavior_tests(mode6309=False, verbose=False, tests=None, label=None):
     """Run behavioral fidelity tests."""
     passed = 0
     failed = 0
     errors = []
 
-    print(f"\nRunning {len(BEHAVIOR_TESTS)} behavioral tests...")
+    if tests is None:
+        tests = BEHAVIOR_TESTS
+    label = label or ('behavioral (6309)' if mode6309 and tests is not BEHAVIOR_TESTS else 'behavioral')
 
-    for desc, source, expect_error in BEHAVIOR_TESTS:
+    print(f"\nRunning {len(tests)} {label} tests...")
+
+    for desc, source, expect_error in tests:
         cocotools_bytes, cocotools_err = assemble_cocotools(source, mode6309)
         lwasm_bytes,     lwasm_err     = assemble_lwasm(source, mode6309)
 
@@ -762,7 +861,7 @@ def run_behavior_tests(mode6309=False, verbose=False):
                 errors.append(msg)
                 failed += 1
 
-    print(f"Behavioral results: {passed} passed, {failed} failed out of {len(BEHAVIOR_TESTS)} tests")
+    print(f"{label.capitalize()} results: {passed} passed, {failed} failed out of {len(tests)} tests")
     return failed == 0
 
 
@@ -986,6 +1085,8 @@ if __name__ == '__main__':
     
     success1 = run_tests(mode6309=args.mode6309, verbose=args.verbose)
     success2 = run_behavior_tests(mode6309=args.mode6309, verbose=args.verbose)
+    success2b = run_behavior_tests(mode6309=True, verbose=args.verbose,
+                                    tests=BEHAVIOR_TESTS_6309, label='behavioral (6309-only)')
     success3 = run_structural_tests(mode6309=args.mode6309, verbose=args.verbose)
     success4 = run_expression_simplify_tests(verbose=args.verbose)
-    sys.exit(0 if (success1 and success2 and success3 and success4) else 1)
+    sys.exit(0 if (success1 and success2 and success2b and success3 and success4) else 1)
