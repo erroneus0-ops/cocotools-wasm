@@ -197,25 +197,47 @@ Size: {r['lines']} lines, {r['branches']} branches, {len(r['gotos'])} gotos
 The C function is in `source.c`.
 The current Python translation (if any) is in `existing.py`.
 
+## Setup (do this first)
+
+Use bash_tool to clone the repository -- do NOT use web_fetch to browse GitHub:
+
+```bash
+git clone https://github.com/erroneus0-ops/SuperComm-disassembled.git /tmp/supercomm
+cd /tmp/supercomm
+pip install --break-system-packages -e . 2>/dev/null || true
+```
+
+All files are then available locally. The fidelity harness requires lwasm:
+```bash
+cd /tmp/supercomm/lwtools-4.24 && make -j$(nproc) 2>/dev/null
+```
+
 ## Required reading (in order)
 
-1. `source.c` -- the C function. This is the spec. This is the truth.
-2. `checklist.md` -- pre-filled risk analysis. Complete before writing Python.
+After cloning, read these files locally:
+
+1. `translation_packages/{rank:02d}_{fname}/source.c` -- THE SPEC. THE TRUTH.
+2. `translation_packages/{rank:02d}_{fname}/checklist.md` -- pre-filled risk analysis
 3. `cocotools/TRANSLATION_GUIDE.md` -- full checklist and risk catalog
 4. `cocotools/DATA_STRUCTURE_AUDIT.md` -- shared struct reference
 5. `cocotools/c_compat.py` -- C compatibility primitives
+6. `translation_packages/{rank:02d}_{fname}/existing.py` -- current translation (SUSPECT)
+7. `cocotools/{py_file}` -- full Python file containing the translation target
 
 ## Translation order (critical)
 
 1. Read `source.c` -- understand the C function completely
 2. Fill in checklist "Interaction risks" and "Mitigations applied" sections
 3. Write the Python translation from the C -- independently, not from existing.py
-4. Read `existing.py` -- compare your translation against it
+4. Read `existing.py` -- compare your translation against the existing Python
    - Any difference is either a bug in existing.py OR a mistake in your translation
    - Investigate each difference. Do not assume existing.py is correct.
    - existing.py is SUSPECT. The C is the truth.
-5. Run the harness -- `python cocotools/test_fidelity.py`
-6. Fix until all 211 tests pass. Add 3+ new tests for this function.
+5. Run the harness:
+   ```bash
+   cd /tmp/supercomm && python cocotools/test_fidelity.py
+   ```
+6. Fix until all tests pass. Add 3+ new tests for this function.
 
 ## Compat primitives
 
