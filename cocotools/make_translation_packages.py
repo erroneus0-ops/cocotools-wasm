@@ -353,6 +353,10 @@ def make_package(fname, c_rel_path, py_file):
 
     rank = next((i for i, (f,_,__) in enumerate(PRIORITY_FUNCTIONS, 1) if f == fname), 0)
     pkg = os.path.join(OUTPUT_DIR, f"{rank:02d}_{fname}")
+    done = pkg + "-DONE"
+    if os.path.exists(done):
+        print(f"  SKIP translation_packages/{rank:02d}_{fname}/ -- marked DONE")
+        return True
     os.makedirs(pkg, exist_ok=True)
 
     open(os.path.join(pkg, 'source.c'), 'w').write(
