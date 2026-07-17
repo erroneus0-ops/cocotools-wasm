@@ -1310,9 +1310,9 @@ def insn_parse_rlist(as_, cl, operand):
     cl.lint = 0
 
     if p.peek() == '#':
-        insn_parse_imm8(as_, cl, operand)
+        remaining = insn_parse_imm8(as_, cl, operand)
         cl.lint = 1
-        return p.remaining()
+        return remaining
 
     rb = 0
     while p.peek() and not p.peek().isspace() \

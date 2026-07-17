@@ -231,6 +231,10 @@ TESTS = [
     ("PULS", "A,B,X,PC",  "puls-abxpc",       False),
     ("PSHU", "A,B",       "pshu-ab",          False),
     ("PULU", "A,B,PC",    "pulu-abpc",        False),
+    ("PSHS", "#$06",      "pshs-imm8",        False),
+    ("PSHU", "#$81",      "pshu-imm8",        False),
+    ("PSHU", "S",         "pshu-s",           False),
+    ("PULS", "U",         "puls-u",           False),
 
     # LEA
     ("LEAX", ",X",        "lea-zero",         False),
@@ -288,6 +292,28 @@ BEHAVIOR_TESTS = [
 
     ("error-bad-register-pshs",
      "         ORG $3F00\n         PSHS Z\n         END\n",
+     True),
+
+    # Regression: insn_parse_rlist's '#' branch must return the cursor
+    # position advanced by insn_parse_imm8, not the stale, unadvanced
+    # outer position -- otherwise the assembler thinks the operand wasn't
+    # fully consumed and raises a spurious "Bad operand" error, AND the
+    # subsequent line would be at risk if the wrong remainder ever leaked
+    # into further parsing.
+    ("behavior-pshs-immediate-form",
+     "         ORG $3F00\n         PSHS #$06\n         LDA #$01\n         END\n",
+     False),
+
+    ("behavior-pshu-immediate-form",
+     "         ORG $3F00\n         PSHU #$81\n         END\n",
+     False),
+
+    ("error-pshs-register-s-invalid",
+     "         ORG $3F00\n         PSHS S\n         END\n",
+     True),
+
+    ("error-pshu-register-u-invalid",
+     "         ORG $3F00\n         PSHU U\n         END\n",
      True),
 
     ("error-equ-no-label",
@@ -622,6 +648,25 @@ STRUCTURAL_TESTS = [
     ("struct-pshs-pc",
      "         ORG $3F00\nTEST     PSHS  PC\n         END\n",
      {'len': 2, 'pb': 0x80, 'lint': 0}),
+
+    # Regression for the '#' branch aliasing bug: len/lint must reflect
+    # the immediate encoding path (insn_parse_imm8), and pb stays 0 since
+    # the immediate form encodes the register mask directly in the operand
+    # byte rather than in cl.pb.
+    ("struct-pshs-imm8",
+     "         ORG $3F00\nTEST     PSHS  #$06\n         END\n",
+     {'len': 2, 'pb': 0x00, 'lint': 1}),
+
+    # U and S share bit 0x40 -- only one is ever legal per PSHS/PSHU
+    # context, so this bit means "the other stack's pointer" depending
+    # on which of the two push/pull instructions is in play.
+    ("struct-pshu-s",
+     "         ORG $3F00\nTEST     PSHU  S\n         END\n",
+     {'len': 2, 'pb': 0x40, 'lint': 0}),
+
+    ("struct-puls-u",
+     "         ORG $3F00\nTEST     PULS  U\n         END\n",
+     {'len': 2, 'pb': 0x40, 'lint': 0}),
 
     ("struct-tfr-d-x",
      "         ORG $3F00\nTEST     TFR   D,X\n         END\n",
