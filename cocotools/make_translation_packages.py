@@ -232,12 +232,34 @@ from cocotools.c_compat import (
 ## Verification
 
 After translating:
-1. Run `python cocotools/test_fidelity.py` -- all 211 tests must pass
+1. Run `python cocotools/test_fidelity.py` -- all existing tests must pass
 2. Add 3+ new test cases covering branches in this function
 3. Run `-v` to inspect structural state for new tests
 
 Do not modify existing tests to make them pass.
 Fix the translation until the tests pass.
+
+## Deliverables (required at end of session)
+
+When all tests pass, produce the following and present for download:
+
+1. **SUMMARY.md** -- document containing:
+   - What you read and in what order
+   - Pre-translation checklist completed (all 9 categories filled in)
+   - Every divergence found between existing.py and the C source
+   - For each divergence: was it a bug in existing.py or correct behavior? Why?
+   - Every bug fixed with: C code, old Python, new Python, verification method
+   - New test cases added and what they cover
+   - Final test counts (X passed, 0 failed)
+
+2. **Updated files** -- any cocotools/*.py files that were changed
+
+3. **Updated package files** -- checklist.md and existing.py updated to reflect
+   current state of the translation
+
+Package all of the above into a zip file named `{fname}_audit.zip`
+and present it for download. This zip will be placed in the
+`translation_packages/{rank:02d}_{fname}/` directory for review.
 
 ## Reference
 
