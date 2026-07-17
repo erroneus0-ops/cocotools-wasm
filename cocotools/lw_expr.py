@@ -461,6 +461,16 @@ class Expr:
                 return
 
         # ---- Partial evaluation for PLUS: collect integer terms -----
+        # source.c lines 297-320. Merge every literal-int operand into a
+        # single running total; re-add it (once, at the end) only if
+        # nonzero. NOTE: unlike a prior version of this function, there is
+        # no early "collapse to single term / zero" here -- that collapse
+        # doesn't happen in the C until the dedicated block near the end
+        # (source.c lines 449-522), which runs *after* sort-const-first
+        # and like-term collection below. Returning early here would skip
+        # those steps for cases they still need to run on (e.g. "x + 0 + y"
+        # reduces to two operands here, but still needs like-term
+        # collection to check whether x and y are like terms).
         if self.value == OPER_PLUS:
             cval    = 0
             non_int = []
@@ -472,19 +482,9 @@ class Expr:
             self.operands = non_int
             if cval != 0:
                 self.operands.append(Expr.int(cval))
-            # Eliminate zero terms
-            self.operands = [op for op in self.operands
-                             if not (op.type == TYPE_INT and op.value == 0)]
-            # Collapse to single term
-            if len(self.operands) == 1:
-                self._become(self.operands[0])
-                return
-            if len(self.operands) == 0:
-                self.type  = TYPE_INT
-                self.value = 0
-                return
 
         # ---- Partial evaluation for TIMES: collect integer terms ----
+        # source.c lines 322-345.
         if self.value == OPER_TIMES:
             cval    = 1
             non_int = []
@@ -493,17 +493,115 @@ class Expr:
                     cval *= op.value
                 else:
                     non_int.append(op)
-            # Any factor is zero -> whole product is zero
-            if cval == 0:
-                self.type     = TYPE_INT
-                self.value    = 0
-                self.operands = []
-                return
             self.operands = non_int
             if cval != 1:
                 self.operands.append(Expr.int(cval))
 
+        # ---- TIMES: any literal-0 operand makes the whole product 0 ----
+        # source.c lines 347-366 -- a separate, later check from the cval
+        # collection above (by the time we get here, at most one literal
+        # int remains -- the merged cval -- so this fires only when that
+        # cval collapsed to 0).
+        if self.value == OPER_TIMES:
+            for op in self.operands:
+                if op.type == TYPE_INT and op.value == 0:
+                    self.type     = TYPE_INT
+                    self.value    = 0
+                    self.operands = []
+                    return
+
+        # ---- Sort constants to the front of + and * operand lists ------
+        # source.c line 369-370: lw_expr_simplify_sortconstfirst(E).
+        # Needed so the like-term coefficient extraction below (which,
+        # like the C, only inspects the *first* operand of a TIMES node)
+        # finds the right value.
+        if self.value == OPER_PLUS or self.value == OPER_TIMES:
+            _sort_const_first(self)
+
+        # ---- Like-term collection in PLUS ---------------------------
+        # source.c lines 372-446 (lw_expr_simplify_isliketerm + merge).
+        # Collects  2x + 3x  =>  5x,  x + x*y ... etc. Unlike a prior
+        # version of this function, this operates on full operand lists
+        # (a term can be a product of several non-constant factors, e.g.
+        # "2*x*y") rather than assuming a single "base" expression, and
+        # reads the coefficient only from the first operand of a TIMES
+        # node -- matching the C exactly now that sort-const-first (above)
+        # guarantees the constant is first when one is present.
+        if self.value == OPER_PLUS:
+            restart = True
+            while restart:
+                restart = False
+                ops = self.operands
+                n = len(ops)
+                for i in range(n):
+                    if ops[i].type == TYPE_INT:
+                        continue
+                    for j in range(i + 1, n):
+                        if ops[j].type == TYPE_INT:
+                            continue
+                        if _is_like_term(ops[i], ops[j]):
+                            t1, t2 = ops[i], ops[j]
+                            if t1.type == TYPE_OPER and t1.value == OPER_TIMES:
+                                coef = (t1.operands[0].value
+                                        if t1.operands[0].type == TYPE_INT else 1)
+                            else:
+                                coef = 1
+                            if t2.type == TYPE_OPER and t2.value == OPER_TIMES:
+                                coef2 = (t2.operands[0].value
+                                         if t2.operands[0].type == TYPE_INT else 1)
+                            else:
+                                coef2 = 1
+                            coef += coef2
+                            new_times = Expr(TYPE_OPER, OPER_TIMES)
+                            if coef != 1:
+                                new_times.operands.append(Expr.int(coef))
+                            if t2.type == TYPE_OPER:
+                                for sub in t2.operands:
+                                    if sub.type == TYPE_INT:
+                                        continue
+                                    new_times.operands.append(sub.copy())
+                            else:
+                                new_times.operands.append(t2.copy())
+                            ops[i] = new_times
+                            ops[j] = Expr.int(0)
+                            restart = True
+                            break
+                    if restart:
+                        break
+
+        # ---- PLUS: collapse to single term / zero, or prune zeros -----
+        # source.c lines 449-522. This is the ONLY place a PLUS node
+        # collapses to a bare operand or to a literal 0 -- deliberately
+        # placed after like-term collection above, since a like-term
+        # cancellation (e.g. x + -x) leaves behind exactly the kind of
+        # literal-0 placeholder this block prunes.
+        if self.value == OPER_PLUS:
+            c = 0
+            t = 0
+            for op in self.operands:
+                t += 1
+                if not (op.type == TYPE_INT and op.value == 0):
+                    c += 1
+            if c == 1:
+                r = None
+                for op in self.operands:
+                    if not (op.type == TYPE_INT and op.value == 0):
+                        r = op
+                self._become(r)
+                return
+            elif c == 0:
+                self.type     = TYPE_INT
+                self.value    = 0
+                self.operands = []
+                return
+            elif c != t:
+                self.operands = [op for op in self.operands
+                                  if not (op.type == TYPE_INT and op.value == 0)]
+            return
+
         # ---- Distribute: int * (a + b) -> int*a + int*b -------------
+        # source.c lines 524-578 -- deliberately LAST, only for exactly
+        # two operands where one is a literal int and the other a PLUS.
         if self.value == OPER_TIMES and len(self.operands) == 2:
             a, b = self.operands
             if a.type == TYPE_INT and b.type == TYPE_OPER and b.value == OPER_PLUS:
@@ -512,48 +610,6 @@ class Expr:
             elif b.type == TYPE_INT and a.type == TYPE_OPER and a.value == OPER_PLUS:
                 self.value    = OPER_PLUS
                 self.operands = [Expr.oper(OPER_TIMES, b, t) for t in a.operands]
-
-        # ---- Like-term collection in PLUS ---------------------------
-        # (lw_expr_simplify_isliketerm / like-term loop in C)
-        # Collects  2x + 3x  =>  5x  etc.
-        if self.value == OPER_PLUS:
-            i = 0
-            while i < len(self.operands):
-                t1 = self.operands[i]
-                if t1.type == TYPE_INT:
-                    i += 1
-                    continue
-                j = i + 1
-                while j < len(self.operands):
-                    t2 = self.operands[j]
-                    if t2.type == TYPE_INT:
-                        j += 1
-                        continue
-                    if _is_like_term(t1, t2):
-                        coef1 = _coef_of(t1)
-                        coef2 = _coef_of(t2)
-                        base  = _base_of(t1)
-                        total = coef1 + coef2
-                        if total == 0:
-                            # terms cancel
-                            self.operands[i] = Expr.int(0)
-                            self.operands[j] = Expr.int(0)
-                        else:
-                            combined = Expr.oper(OPER_TIMES, Expr.int(total), base)
-                            self.operands[i] = combined
-                            self.operands[j] = Expr.int(0)
-                        t1 = self.operands[i]
-                        i  = 0   # restart outer loop (matching C goto again)
-                        break
-                    j += 1
-                i += 1
-            # Remove zero terms after collection
-            self.operands = [op for op in self.operands
-                             if not (op.type == TYPE_INT and op.value == 0)]
-            if len(self.operands) == 1:
-                self._become(self.operands[0])
-            elif len(self.operands) == 0:
-                self.type = TYPE_INT; self.value = 0
 
     # ------------------------------------------------------------------
     # Compute fully-resolved operator result
@@ -566,7 +622,12 @@ class Expr:
         """
         op = self.value
         if op == OPER_NEG:    return -vals[0]
-        if op == OPER_COM:    return ~vals[0] & 0xFFFF
+        # source.c: `tr = ~(E->operands->p->value);` -- NO mask here. Only
+        # COM8 masks (`& 0xff`). Masking COM to 16 bits (as a prior version
+        # of this function did) diverges from the true C internal state:
+        # in C, ~5 stays -6 (plain int complement); it is not truncated
+        # to an unsigned 16-bit value at this point in the computation.
+        if op == OPER_COM:    return ~vals[0]
         if op == OPER_COM8:   return ~vals[0] & 0xFF
         if op == OPER_PLUS:
             r = vals[0]
@@ -649,51 +710,78 @@ class Expr:
 # Corresponds to lw_expr_simplify_isliketerm and related code in C.
 # ---------------------------------------------------------------------------
 
-def _coef_of(e):
+def _sort_const_first(e):
     """
-    Return the integer coefficient of a term in a PLUS expression.
-    If e is (int * stuff), return int; otherwise return 1.
+    lw_expr_simplify_sortconstfirst(E) (lw_expr.c lines 449-477):
+    Recursively move every literal-int operand of a PLUS/TIMES node to the
+    front of its operand list (non-PLUS/TIMES nodes, and their operands,
+    are left alone). No-op if E isn't PLUS/TIMES.
+
+    Needed so that later code (like-term coefficient extraction) which,
+    matching the C, only inspects the *first* operand of a TIMES node to
+    find its coefficient, actually finds it there.
     """
-    if e.type == TYPE_OPER and e.value == OPER_TIMES:
-        for op in e.operands:
-            if op.type == TYPE_INT:
-                return op.value
-    return 1
+    if e.type != TYPE_OPER or e.value not in (OPER_PLUS, OPER_TIMES):
+        return
+    for op in e.operands:
+        if op.type == TYPE_OPER and op.value in (OPER_PLUS, OPER_TIMES):
+            _sort_const_first(op)
+    ops = e.operands
+    i = 0
+    while i < len(ops):
+        if ops[i].type == TYPE_INT and i != 0:
+            ops.insert(0, ops.pop(i))
+            continue   # re-examine position i (now holds the next element)
+        i += 1
 
 
-def _base_of(e):
+def _compare_operand_list(list1, list2):
     """
-    Return the non-integer base of a term.
-    If e is (int * base), return base; otherwise return e itself.
+    lw_expr_simplify_compareoperandlist: ordered, element-wise comparison.
+    lw_expr_sortoperandlist -- which this C function calls on both lists
+    first -- is an unimplemented no-op stub in the real lw_expr.c ("not yet
+    implemented"), so no actual sorting occurs here either; this is a
+    strictly order-sensitive comparison, matching that reality.
     """
-    if e.type == TYPE_OPER and e.value == OPER_TIMES:
-        for op in e.operands:
-            if op.type != TYPE_INT:
-                return op
-    return e
+    if len(list1) != len(list2):
+        return False
+    return all(a == b for a, b in zip(list1, list2))
 
 
 def _is_like_term(e1, e2):
     """
-    lw_expr_simplify_isliketerm:
-    True if e1 and e2 have the same non-constant factors.
+    lw_expr_simplify_isliketerm(e1, e2) (lw_expr.c lines 503-554).
+
+    True if e1 and e2 differ only in an integer-literal coefficient --
+    i.e. they're "like terms" that can be added together (2x and 3x; x and
+    5*x*y is NOT a like term of plain x, etc.)
     """
-    b1 = _base_of(e1)
-    b2 = _base_of(e2)
-    if b1 is e1 and b2 is e2:
-        return e1 == e2
-    if b1 is e1:
-        # e2 is a TIMES with a constant; check if its non-int part matches e1
-        non_int = [op for op in e2.operands if op.type != TYPE_INT]
-        if len(non_int) == 1:
-            return e1 == non_int[0]
-        return False
-    if b2 is e2:
-        non_int = [op for op in e1.operands if op.type != TYPE_INT]
-        if len(non_int) == 1:
-            return e2 == non_int[0]
-        return False
-    return b1 == b2
+    if e1.type == TYPE_OPER and e1.value == OPER_TIMES:
+        if e2.type == TYPE_OPER and e2.value == OPER_TIMES:
+            # Both TIMES: skip each one's leading run of int operands
+            # (there should be at most one, at the front, courtesy of
+            # sort-const-first), then compare what's left, in order.
+            i1 = 0
+            while i1 < len(e1.operands) and e1.operands[i1].type == TYPE_INT:
+                i1 += 1
+            i2 = 0
+            while i2 < len(e2.operands) and e2.operands[i2].type == TYPE_INT:
+                i2 += 1
+            return _compare_operand_list(e1.operands[i1:], e2.operands[i2:])
+
+        # e2 is not a TIMES -- e1 must be exactly (coefficient * single
+        # term) for this to count as a like term at all.
+        if len(e1.operands) != 2:
+            return False
+        return e1.operands[1] == e2
+
+    if e2.type == TYPE_OPER and e2.value == OPER_TIMES:
+        if len(e2.operands) != 2:
+            return False
+        return e1 == e2.operands[1]
+
+    # Neither is a TIMES -- only a like term if structurally identical.
+    return e1 == e2
 
 
 # ---------------------------------------------------------------------------

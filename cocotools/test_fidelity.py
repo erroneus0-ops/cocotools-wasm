@@ -473,6 +473,139 @@ STRUCTURAL_TESTS = [
 ]
 
 
+# ── Expression-simplification tests (lw_expr_simplify_l / _go) ───────────────
+# These exercise Expr.simplify() directly rather than through full assembly,
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from cocotools.lw_expr import Expr, TYPE_OPER, OPER_PLUS, OPER_TIMES, OPER_COM, OPER_COM8
+# because several of the branches below (multi-factor like-term collection,
+# the un-masked COM operator, distribution over a 3+ term sum) either don't
+# reliably survive to the *output byte* level (everything's a compile-time
+# constant by the time DECB bytes are emitted) or need operands that never
+# resolve to plain integers (bare symbols) to exercise the symbolic paths
+# at all.
+#
+# Expected results were captured from a standalone C program linked
+# directly against a from-source build of lwtools-4.24's liblw.a, calling
+# lw_expr_simplify() on hand-built expression trees and printing the
+# result with the same postfix notation as Expr.__repr__ -- i.e. these are
+# not "what we think the code should do", they're the actual recorded
+# output of the real C implementation being translated.
+EXPRESSION_SIMPLIFY_TESTS = [
+    # (description, expr-builder, expected repr() after simplify())
+
+    ("expr-com-unmasked",
+     # ~5 -- source.c's COM case has NO mask (`tr = ~(...)`); only COM8
+     # masks with `& 0xff`. A prior version of this translation masked
+     # COM to 16 bits, turning -6 into 65530.
+     lambda: _mk_oper(OPER_COM, [Expr.int(5)]),
+     '-0x6'),
+
+    ("expr-com8-masked",
+     # ~5 in 8-bit mode -- SHOULD mask to 0xfa, unlike plain COM above.
+     # Included alongside expr-com-unmasked so the two can't both pass by
+     # accident (e.g. by masking neither, or masking both the same way).
+     lambda: _mk_oper(OPER_COM8, [Expr.int(5)]),
+     '0xfa'),
+
+    ("expr-multi-factor-like-terms",
+     # 2*X*Y + 3*X*Y -> 5*X*Y. A prior version of _is_like_term /
+     # _base_of only ever looked at a single non-constant factor of a
+     # TIMES node, so a term with *two* non-constant factors (X and Y)
+     # silently lost one of them -- this collapsed to "X*5" (Y quietly
+     # discarded) instead of "5*X*Y".
+     lambda: _mk_oper(OPER_PLUS, [
+         _mk_oper(OPER_TIMES, [Expr.int(2), Expr.var('X'), Expr.var('Y')]),
+         _mk_oper(OPER_TIMES, [Expr.int(3), Expr.var('X'), Expr.var('Y')]),
+     ]),
+     '[3]* 0x5 V(X) V(Y)'),
+
+    ("expr-cancel-terms",
+     # X + -1*X -> 0 (like terms with coefficients summing to zero cancel
+     # entirely, via the PLUS collapse-to-zero block).
+     lambda: _mk_oper(OPER_PLUS, [
+         Expr.var('X'),
+         _mk_oper(OPER_TIMES, [Expr.int(-1), Expr.var('X')]),
+     ]),
+     '0x0'),
+
+    ("expr-prune-zero-keep-others",
+     # X + 0 + Y -> X + Y (zero term pruned, but two other terms remain --
+     # must NOT collapse all the way down to a single operand).
+     lambda: _mk_oper(OPER_PLUS, [Expr.var('X'), Expr.int(0), Expr.var('Y')]),
+     '[2]+ V(X) V(Y)'),
+
+    ("expr-collapse-single-after-zero",
+     # 0 + X -> X (exactly one non-zero operand remains -> collapse to it
+     # directly, matching source.c lines 449-522, not the earlier partial
+     # PLUS evaluation step).
+     lambda: _mk_oper(OPER_PLUS, [Expr.int(0), Expr.var('X')]),
+     'V(X)'),
+
+    ("expr-sort-const-first",
+     # X + 5 -> 5 + X. lw_expr_simplify_sortconstfirst moves the literal
+     # to the front of a PLUS/TIMES operand list; a prior version of this
+     # translation never called it at all.
+     lambda: _mk_oper(OPER_PLUS, [Expr.var('X'), Expr.int(5)]),
+     '[2]+ 0x5 V(X)'),
+
+    ("expr-distribute-three-term",
+     # 3*(X+Y+Z) -> 3*X + 3*Y + 3*Z. Distribution must handle a sum of
+     # any arity, not just exactly two terms.
+     lambda: _mk_oper(OPER_TIMES, [
+         Expr.int(3),
+         _mk_oper(OPER_PLUS, [Expr.var('X'), Expr.var('Y'), Expr.var('Z')]),
+     ]),
+     '[3]+ [2]* 0x3 V(X) [2]* 0x3 V(Y) [2]* 0x3 V(Z)'),
+]
+
+
+def _mk_oper(op, operands):
+    """Build a raw TYPE_OPER Expr node with the given operator and operand
+    list directly (bypassing Expr.oper()'s auto-copy), for constructing
+    test trees precisely."""
+    from cocotools.lw_expr import Expr, TYPE_OPER
+    e = Expr(TYPE_OPER, op)
+    e.operands = operands
+    return e
+
+
+def run_expression_simplify_tests(verbose=False):
+    """Run Expr.simplify() directly against recorded real-lwtools output."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    from cocotools.lw_expr import ExprContext
+
+    passed = 0
+    failed = 0
+    errors = []
+
+    print(f"\nRunning {len(EXPRESSION_SIMPLIFY_TESTS)} expression-simplify tests...")
+
+    for desc, builder, expected in EXPRESSION_SIMPLIFY_TESTS:
+        ctx = ExprContext()
+        e = builder()
+        before = repr(e)
+        e.simplify(ctx)
+        actual = repr(e)
+
+        if actual == expected:
+            if verbose:
+                print(f"  PASS  [{desc}] {before} -> {actual}")
+            passed += 1
+        else:
+            msg = (f"FAIL  [{desc}]\n"
+                   f"       before:   {before}\n"
+                   f"       expected: {expected}\n"
+                   f"       actual:   {actual}")
+            print(f"  {msg}")
+            errors.append(msg)
+            failed += 1
+
+    print(f"Expression-simplify results: {passed} passed, {failed} failed "
+          f"out of {len(EXPRESSION_SIMPLIFY_TESTS)} tests")
+    return failed == 0
+
+
 def _get_line_state(source, label='TEST', mode6309=False):
     """Assemble source and return the internal state of the labeled line."""
     import sys, os, tempfile
@@ -854,4 +987,5 @@ if __name__ == '__main__':
     success1 = run_tests(mode6309=args.mode6309, verbose=args.verbose)
     success2 = run_behavior_tests(mode6309=args.mode6309, verbose=args.verbose)
     success3 = run_structural_tests(mode6309=args.mode6309, verbose=args.verbose)
-    sys.exit(0 if (success1 and success2 and success3) else 1)
+    success4 = run_expression_simplify_tests(verbose=args.verbose)
+    sys.exit(0 if (success1 and success2 and success3 and success4) else 1)
