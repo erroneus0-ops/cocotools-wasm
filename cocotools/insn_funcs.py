@@ -1365,11 +1365,68 @@ def insn_parse_rlist(as_, cl, operand):
 def insn_resolve_rlist(as_, cl, force):
     pass
 
+# ---------------------------------------------------------------------------
+# FUNCTION: _cycle_calc_rlist
+# SOURCE:   lwtools-4.24/lwasm/cycle.c lines 656-670 (lwasm_cycle_calc_rlist)
+#
+# Additional-cycle calculation for the rlist postbyte (PSHS/PULS/PSHU/PULU).
+# Needed as a helper because insn_emit_rlist (source.c) calls it directly;
+# not yet reachable from any other translated function.
+#
+# Pre-translation checklist:
+#   Integer width: none -- cl.pb already constrained to a byte value by the
+#     parse-time assignment (insn_parse_rlist); no masking needed here.
+#   Division/modulo: none
+#   char **p: N/A
+#   goto: none
+#   char signedness: N/A
+#   Argument order: N/A -- no function-call arguments with side effects
+#   Promotion: safe -- plain int accumulation, no truncation on assignment
+#   Complement: none
+#   lookupreg: N/A
+# ---------------------------------------------------------------------------
+def _cycle_calc_rlist(cl):
+    """lwasm_cycle_calc_rlist(cl): extra ticks for pushed/pulled registers.
+
+    1 cycle for each of the four 8-bit registers (bits 0-3: CC,A,B,DP),
+    2 cycles for each of the four 16-bit registers (bits 4-7: X,Y,U/S,PC).
+    """
+    cycles = 0
+    for i in range(8):
+        if cl.pb & (1 << i):
+            cycles += 1 if i <= 3 else 2
+    return cycles
+
+# ---------------------------------------------------------------------------
+# FUNCTION: insn_emit_rlist
+# SOURCE:   lwtools-4.24/lwasm/insn_rlist.c lines 96-108
+# TRANSLATED: 2026-07-17
+#
+# Pre-translation checklist results:
+#   Integer width: none -- no fixed-width assignments
+#   Division/modulo: none
+#   char **p: N/A
+#   goto: none
+#   char signedness: safe
+#   Argument order: safe -- no argument-position side effects
+#   Promotion: safe
+#   Complement: none
+#   lookupreg: N/A
+#
+# Interaction risks: cl.pb must already reflect the final rlist postbyte
+#   (set during resolve/parse) by the time cycle_adj is computed here --
+#   confirmed by insn_resolve_rlist being a no-op and cl.pb being set at
+#   parse time in insn_parse_rlist.
+# Mitigations applied: none needed
+# ---------------------------------------------------------------------------
 def insn_emit_rlist(as_, cl):
     if cl.lint == 1:
         insn_emit_imm8(as_, cl); return
+
     cl.emitop(_ops(cl)[0])
     cl.emit(cl.pb)
+
+    cl.cycle_adj = _cycle_calc_rlist(cl)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

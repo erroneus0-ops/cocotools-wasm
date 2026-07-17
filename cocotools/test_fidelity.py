@@ -675,6 +675,42 @@ STRUCTURAL_TESTS = [
     ("struct-tfr-a-b",
      "         ORG $3F00\nTEST     TFR   A,B\n         END\n",
      {'len': 2, 'pb': 0x89, 'lint': 0}),
+
+    # ── insn_emit_rlist / lwasm_cycle_calc_rlist coverage ──────────────────
+    # cycle_adj is set at *emit* time (source.c line 107), not at parse or
+    # resolve time, so these exercise insn_emit_rlist's normal (non-imm8)
+    # branch and check the actual per-register cycle tally: 1 cycle for
+    # each 8-bit register (CC,A,B,DP -- pb bits 0-3), 2 cycles for each
+    # 16-bit register (X,Y,U/S,PC -- pb bits 4-7).
+
+    # PSHS D -> pb=0x06 (A,B bits) -> 1+1 = 2
+    ("struct-pshs-d-cycle-adj",
+     "         ORG $3F00\nTEST     PSHS  D\n         END\n",
+     {'pb': 0x06, 'cycle_adj': 2}),
+
+    # PSHS PC -> pb=0x80 (PC bit, a 16-bit register) -> 2
+    ("struct-pshs-pc-cycle-adj",
+     "         ORG $3F00\nTEST     PSHS  PC\n         END\n",
+     {'pb': 0x80, 'cycle_adj': 2}),
+
+    # PSHS A,B,X -> pb = 0x02|0x04|0x10 = 0x16 -> 1+1+2 = 4
+    ("struct-pshs-abx-cycle-adj",
+     "         ORG $3F00\nTEST     PSHS  A,B,X\n         END\n",
+     {'pb': 0x16, 'cycle_adj': 4}),
+
+    # PULS A,B,X,PC -> pb = 0x02|0x04|0x10|0x80 = 0x96 -> 1+1+2+2 = 6
+    ("struct-puls-abxpc-cycle-adj",
+     "         ORG $3F00\nTEST     PULS  A,B,X,PC\n         END\n",
+     {'pb': 0x96, 'cycle_adj': 6}),
+
+    # PSHS #$06 takes the insn_emit_imm8 branch (cl.lint == 1), which
+    # returns before the cycle_adj = lwasm_cycle_calc_rlist(cl) line is
+    # ever reached. cycle_adj must stay at the value cycle_update_count()
+    # set during cl.emitop() inside insn_emit_imm8 -- i.e. 0, not a stale
+    # or miscalculated rlist tally.
+    ("struct-pshs-imm8-cycle-adj",
+     "         ORG $3F00\nTEST     PSHS  #$06\n         END\n",
+     {'pb': 0x00, 'cycle_adj': 0}),
 ]
 
 
