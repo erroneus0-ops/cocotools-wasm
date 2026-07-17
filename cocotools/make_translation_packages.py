@@ -211,8 +211,8 @@ The current Python translation (if any) is in `existing.py`.
 
 ## FIRST ACTION -- before reading anything else
 
-Run this bash_tool command block immediately. Do not use web_fetch for any repo files.
-web_fetch cannot access this repository reliably. bash_tool can. Use bash_tool.
+Clone the repository using bash_tool. This is preferred over individual web_fetch calls
+because repeated fetches to raw GitHub URLs hit tool restrictions and burn tokens unnecessarily.
 
 ```bash
 git clone https://github.com/erroneus0-ops/SuperComm-disassembled.git /tmp/supercomm && echo "READY"
