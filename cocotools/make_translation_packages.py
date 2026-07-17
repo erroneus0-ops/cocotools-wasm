@@ -203,11 +203,10 @@ Run this bash_tool command block immediately. Do not use web_fetch for any repo 
 web_fetch cannot access this repository reliably. bash_tool can. Use bash_tool.
 
 ```bash
-git clone https://github.com/erroneus0-ops/SuperComm-disassembled.git /tmp/supercomm && \
-cd /tmp/supercomm && \
-make -C lwtools-4.24 -j$(nproc) 2>/dev/null && \
-echo "READY"
+git clone https://github.com/erroneus0-ops/SuperComm-disassembled.git /tmp/supercomm && echo "READY"
 ```
+
+lwasm 4.24 is pre-built at /tmp/supercomm/lwtools-4.24/lwasm/lwasm -- no build step needed.
 
 Wait for READY before proceeding. All files are now in /tmp/supercomm/.
 Do not use web_fetch to fetch any files from this repository. Use bash_tool to read them:
