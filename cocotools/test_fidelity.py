@@ -946,6 +946,161 @@ def run_unit_tests(verbose=False):
     return failed == 0
 
 
+# ── Direct-call unit tests: lw_expr_parse_term ────────────────────────────────
+# These bypass the full assembler entirely and call cocotools.lw_expr's
+# internal parser functions directly, using a stub `parse_term` callback
+# (ExprContext.parse_term) that records whether -- and with what -- it was
+# invoked. This is the only way to prove the two bugs fixed in this audit
+# (see lw_expr.py's _parse_term docstring), because the real assembler's
+# own atom parser (AsmState._parse_term in lwasm_core.py) happens to carry
+# its own redundant "not c" check, which silently absorbs the '\0'-vs-''
+# sentinel bug and makes it invisible at the full-program output-byte
+# level. A bare unit test of lw_expr_parse_term itself has no such safety
+# net and exposes both bugs directly.
+#
+# Each entry: (description, input_string, expr_width, expected_result_repr,
+#              expected_stub_called)
+#   expected_result_repr: repr() of the returned Expr, or 'None'
+#   expected_stub_called: whether the stub parse_term should have been
+#     invoked at all, per the true C control flow in source.c
+
+UNIT_TESTS_PARSE_TERM = [
+    # ── Bug 1: '\0' vs '' end-of-input sentinel ──────────────────────────
+    # True end of input: C's `if (!**p) return NULL;` fires immediately,
+    # WITHOUT ever calling parse_term. existing.py's `c == '\\0'` check
+    # can never be true (Ptr.peek() returns '' at end, never '\\0'), so
+    # existing.py fell through every branch and called the stub anyway.
+    ("parse-term-true-eof-no-stub-call",
+     "", 0, "None", False),
+
+    # Same bug, reached via the unary '+' goto (self re-entry): after
+    # consuming the lone '+', the recursive call hits true end-of-input
+    # and must also return NULL without calling parse_term.
+    ("parse-term-unary-plus-then-eof-no-stub-call",
+     "+", 0, "None", False),
+
+    # ── Bug 2: Python isspace() vs C isspace() (checklist: use c_isspace) ─
+    # ASCII File Separator (0x1C) is NOT whitespace under C's isspace()
+    # in the C locale, so the true C control flow falls through to
+    # `return parse_term(p, priv);` and the stub SHOULD be called.
+    # existing.py's `c.isspace()` returns True for '\\x1c' (Python
+    # considers it whitespace), so it wrongly returned None early
+    # without ever reaching the stub.
+    ("parse-term-fs-control-char-reaches-stub",
+     "\x1c", 0, "None", True),
+
+    # Genuine C whitespace (plain space) must still terminate the term
+    # immediately without calling the stub -- regression guard that the
+    # c_isspace() fix doesn't over-correct and start calling the stub on
+    # real whitespace.
+    ("parse-term-real-space-still-terminates",
+     " ", 0, "None", False),
+
+    # ── Regression / branch coverage (not bugs -- confirms behavior that
+    #    was already correct is preserved by the fix) ────────────────────
+    ("parse-term-paren-wraps-atom",
+     "(5)", 0, "0x5", True),
+
+    ("parse-term-unmatched-paren-is-syntax-error",
+     "(5", 0, "None", True),
+
+    ("parse-term-unary-minus-builds-neg-node",
+     "-5", 0, "[1]NEG 0x5", True),
+
+    ("parse-term-unary-complement-16bit-builds-com-node",
+     "~5", 0, "[1]COM 0x5", True),
+
+    ("parse-term-unary-complement-8bit-builds-com8-node",
+     "~5", 8, "[1]COM8 0x5", True),
+
+    ("parse-term-unary-caret-alias-for-complement",
+     "^5", 0, "[1]COM 0x5", True),
+]
+
+
+def run_parse_term_unit_tests(verbose=False):
+    """Direct-call unit tests for lw_expr_parse_term (cocotools.lw_expr._parse_term).
+
+    Calls cocotools.lw_expr._parse_term directly rather than going through
+    the public parse_expr() entry point. This matters: _parse_expr has its
+    own separate (and separately-scoped) top-of-function guard that also
+    checks `c.isspace()` before ever calling _parse_term -- going through
+    parse_expr() would let that outer guard intercept FS/whitespace input
+    before it reached the function actually under test here. Calling
+    _parse_term directly isolates exactly the function this audit covers.
+
+    Uses compact=True (matching AsmState.parse_expr's actual default --
+    lw_parse_expr_compact is used unless PRAGMA_NEWSOURCE is set, which
+    it isn't by default) rather than False. This isn't just cosmetic:
+    _skip_ws's non-compact branch (`if not compact: while p.peek() not in
+    ('\\0',) and p.peek() in ' \\t\\r\\n': p.advance()`) has its own,
+    separate, pre-existing bug -- `'' in ' \\t\\r\\n'` is True in Python
+    (the empty string is a substring of everything), so the loop never
+    terminates once p.peek() reaches '' (true end of input): confirmed
+    directly, `_skip_ws(Ptr(''), False)` hangs forever. That bug belongs
+    to lw_expr_parse_next_tok (a different C function, not covered by
+    this package's source.c or checklist.md) and is explicitly out of
+    scope here -- flagged in SUMMARY.md for a future audit rather than
+    fixed in passing. compact=True sidesteps it entirely (matching how
+    the real assembler actually calls this code by default) without
+    weakening what these tests prove about lw_expr_parse_term itself.
+    """
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from cocotools.lw_expr import Ptr, ExprContext, _parse_term, Expr
+
+    passed = 0
+    failed = 0
+    errors = []
+
+    print(f"\nRunning {len(UNIT_TESTS_PARSE_TERM)} lw_expr_parse_term unit tests...")
+
+    for desc, s, expr_width, expected_repr, expect_stub_called in UNIT_TESTS_PARSE_TERM:
+        call_log = []
+
+        def stub_parse_term(p, ctx, _log=call_log):
+            # Minimal atom parser: recognizes a run of decimal digits,
+            # anything else is "no term matched" (None), same contract
+            # as the real lwasm_parse_term callback.
+            _log.append(p.pos)
+            start = p.pos
+            while p.peek().isdigit():
+                p.advance()
+            if p.pos == start:
+                return None
+            return Expr.int(int(s[start:p.pos]))
+
+        ctx = ExprContext()
+        ctx.parse_term = stub_parse_term
+        ctx.expr_width = expr_width
+
+        p = Ptr(s)
+        result = _parse_term(p, ctx, True)
+        actual_repr = repr(result) if result is not None else "None"
+        stub_called = len(call_log) > 0
+
+        ok = (actual_repr == expected_repr and stub_called == expect_stub_called)
+
+        if ok:
+            if verbose:
+                print(f"  PASS  [{desc}] result={actual_repr} stub_called={stub_called}")
+            passed += 1
+        else:
+            msg = (f"FAIL  [{desc}]\n"
+                   f"       input:                {s!r}\n"
+                   f"       expected result:      {expected_repr}\n"
+                   f"       actual result:        {actual_repr}\n"
+                   f"       expected stub_called: {expect_stub_called}\n"
+                   f"       actual stub_called:   {stub_called}")
+            print(f"  {msg}")
+            errors.append(msg)
+            failed += 1
+
+    print(f"lw_expr_parse_term unit results: {passed} passed, {failed} failed "
+          f"out of {len(UNIT_TESTS_PARSE_TERM)} tests")
+    return failed == 0
+
+
 # ── Expression-simplification tests (lw_expr_simplify_l / _go) ───────────────
 # These exercise Expr.simplify() directly rather than through full assembly,
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1468,4 +1623,5 @@ if __name__ == '__main__':
     success3 = run_structural_tests(mode6309=args.mode6309, verbose=args.verbose)
     success4 = run_expression_simplify_tests(verbose=args.verbose)
     success5 = run_unit_tests(verbose=args.verbose)
-    sys.exit(0 if (success1 and success2 and success2b and success3 and success4 and success5) else 1)
+    success6 = run_parse_term_unit_tests(verbose=args.verbose)
+    sys.exit(0 if (success1 and success2 and success2b and success3 and success4 and success5 and success6) else 1)
