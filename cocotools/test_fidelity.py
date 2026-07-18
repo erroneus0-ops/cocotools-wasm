@@ -559,6 +559,74 @@ BEHAVIOR_TESTS = [
     ("rtor-missing-comma",
      "         ORG $3F00\nTEST     TFR   A B\n         END\n",
      True),
+
+    # ── lw_expr_parse_expr: operator table shadowing (declaration order,
+    #    NOT longest-match) ───────────────────────────────────────────────
+    # "<" is declared before "<=" in the C operators[] table and is a
+    # complete prefix of it, so the C matching loop commits to "<" and
+    # never reaches "<=" -- the dangling "=" then fails to parse as a
+    # term. Confirmed against real lwasm 4.24: "Bad operand".
+    ("expr-le-operator-unreachable",
+     "         ORG $3F00\nRESULT   EQU 5<=10\n         FCB RESULT\n         END\n",
+     True),
+
+    # Same shadowing, ">" before ">=".
+    ("expr-ge-operator-unreachable",
+     "         ORG $3F00\nRESULT   EQU 10>=5\n         FCB RESULT\n         END\n",
+     True),
+
+    # Same shadowing, but via the single-char "!" (bwor alias) instead of
+    # a genuine relational operator: "!" is declared before "!=" and
+    # shadows it the same way.
+    ("expr-ne-operator-unreachable",
+     "         ORG $3F00\nRESULT   EQU 5!=6\n         FCB RESULT\n         END\n",
+     True),
+
+    # Control case: "<>" (lwasm's non-shadowed spelling of NE) is declared
+    # before the single-char "<", so it is never shadowed and parses fine.
+    ("expr-ne-altspelling-works",
+     "         ORG $3F00\nRESULT   EQU 5<>6\n         FCB RESULT\n         END\n",
+     False),
+
+    # ── lw_expr_parse_expr: NULL propagation ──────────────────────────────
+    # A term followed by trailing input that is neither a recognized
+    # operator nor a terminator character is a syntax error in the C
+    # source (lw_expr_destroy(term1); return NULL;), not "return the term
+    # we already have". Confirmed against real lwasm 4.24: "Bad operand".
+    ("expr-trailing-unrecognized-char",
+     "         ORG $3F00\nRESULT   EQU 5@\n         FCB RESULT\n         END\n",
+     True),
+
+    # A recognized, sufficiently-high-precedence operator with nothing
+    # valid after it (dangling operator) is also a full syntax error in
+    # C (term2 comes back NULL, so term1 is destroyed too) -- not a
+    # successful parse of the left operand alone.
+    ("expr-dangling-operator",
+     "         ORG $3F00\nRESULT   EQU 5+\n         FCB RESULT\n         END\n",
+     True),
+
+    # ── lw_expr_parse_expr: matching/precedence interaction ───────────────
+    # At prec=50 (recursing into the right side of a bwand "&"), the
+    # single-char "!" (bwor alias, prec 50) shadows "!=" (prec 55) and
+    # is found first regardless of precedence; since 50 <= 50 it is
+    # handed back unconsumed, so the OUTER (prec=0) call then consumes
+    # it as bwor, leaving a dangling "=3" that fails to parse as a term.
+    # The whole expression is a syntax error. A precedence-filtered
+    # search (skipping "!" because its precedence is too low for the
+    # *inner* prec=50 call) would incorrectly still find "!=" and accept
+    # it -- confirmed against real lwasm 4.24, which rejects this
+    # entirely with "Bad operand".
+    ("expr-operator-precedence-interaction",
+     "         ORG $3F00\nRESULT   EQU 1&2!=3\n         FCB RESULT\n         END\n",
+     True),
+
+    # ── lw_expr_parse_expr: ordinary end-of-input still works ────────────
+    # Regression guard for the '\\0' vs '' sentinel fix: a bare, complete
+    # expression with nothing following it must still parse successfully
+    # all the way to end of input.
+    ("expr-simple-end-of-input",
+     "         ORG $3F00\nRESULT   EQU 5+3\n         FCB RESULT\n         END\n",
+     False),
 ]
 
 
