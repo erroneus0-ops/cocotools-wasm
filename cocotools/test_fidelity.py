@@ -602,6 +602,17 @@ BEHAVIOR_TESTS_6309 = [
     ("indexed-w-fwdref-locks-16bit-6309",
      "         ORG $3F00\n         LDA FWD,W\n         RTS\nFWD      EQU 5\n         END\n",
      False),
+
+    # insn_emit_rtor audit (translation_packages/07): ADCR/ADDR/ANDR/CMPR/
+    # EORR/ORR/SBCR/SUBR are 6309-only rtor-family instructions whose
+    # opcode (e.g. 0x1031) is > 0xFF -- this exercises lwasm_emitop's
+    # two-byte-opcode split (emit high byte, then low byte, then cl.pb)
+    # via insn_emit_rtor, a code path TFR/EXG (opcodes 0x1f/0x1e) never
+    # reach since their opcodes fit in one byte. Full byte comparison
+    # against real lwasm confirms the 3-byte sequence (0x10, 0x31, pb).
+    ("rtor-two-byte-opcode-adcr-6309",
+     "         ORG $3F00\nTEST     ADCR  A,B\n         END\n",
+     False),
 ]
 
 
@@ -718,6 +729,21 @@ STRUCTURAL_TESTS = [
     ("struct-tfr-a-b",
      "         ORG $3F00\nTEST     TFR   A,B\n         END\n",
      {'len': 2, 'pb': 0x89, 'lint': 0}),
+
+    # insn_emit_rtor audit (translation_packages/07): the tests above only
+    # check cl.pb/cl.len/cl.lint, which are set at *parse* time by
+    # insn_parse_rtor -- they'd pass even if insn_emit_rtor itself never
+    # ran or wrote nothing. These check cl.output directly (the field
+    # insn_emit_rtor's two lwasm_emitop/lwasm_emit calls actually write),
+    # confirming the opcode byte (from instab[cl.insn].ops[0]) is emitted
+    # before cl.pb, in that order, with no extra bytes.
+    ("struct-tfr-d-x-output-bytes",
+     "         ORG $3F00\nTEST     TFR   D,X\n         END\n",
+     {'output': bytearray([0x1f, 0x01])}),
+
+    ("struct-exg-a-b-output-bytes",
+     "         ORG $3F00\nTEST     EXG   A,B\n         END\n",
+     {'output': bytearray([0x1e, 0x89])}),
 
     # ── insn_emit_rlist / lwasm_cycle_calc_rlist coverage ──────────────────
     # cycle_adj is set at *emit* time (source.c line 107), not at parse or
