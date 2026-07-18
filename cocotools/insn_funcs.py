@@ -6,7 +6,7 @@ Faithful Python translation of:
     lwasm/insn_rel.c    - relative branch
     lwasm/insn_rtor.c   - register-to-register (TFR, EXG)
     lwasm/insn_rlist.c  - register list (PSHS/PULS)
-    lwasm/insn_indexed.c - indexed addressing (partial)
+    lwasm/insn_indexed.c - indexed addressing
 (William Astle, LWTools, GPL v3)
 
 Parse functions:  (as_, cl, operand:str) -> str (remaining operand)
@@ -310,7 +310,18 @@ def _insn_resolve_gen_aux(as_, cl, force, elen=0):
 
 
 def _insn_emit_gen_aux(as_, cl, extra=-1):
-    """insn_emit_gen_aux: emit opcode + operand bytes for gen mode."""
+    """insn_emit_gen_aux: emit opcode + operand bytes for gen mode.
+
+    NOTE (2026-07-18): this function's cl.lint2==1 (indexed) branch has
+    known gaps relative to what its C counterpart (presumably in
+    insn_gen.c) almost certainly does -- no W_OPERAND_SIZE warning check,
+    no cl.cycle_adj assignment -- discovered while translating the
+    unrelated-but-structurally-similar insn_emit_indexed_aux from
+    insn_indexed.c. NOT fixed here: this function's real C source
+    (insn_gen.c) was not part of that translation package, and patching
+    its behavior without the actual C to diff against would be a guess,
+    not a translation. Left untouched pending its own package.
+    """
     ops  = _ops(cl)
     e    = cl.fetch_expr(0)
 
@@ -510,80 +521,9 @@ def _skip_to_next_token(cl, p):
             p.advance()
 
 
-# ---------------------------------------------------------------------------
-# FUNCTION: insn_parse_indexed_aux
-# SOURCE:   lwtools-4.24/lwasm/insn_indexed.c lines 39-464
-# TRANSLATED: 2026-07-17
-#
-# Pre-translation checklist results:
-#   Integer width: none -- all values are postbyte-range ints (0-0xFF),
-#       safe by construction (see TRANSLATION_GUIDE "Known Safe Patterns").
-#   Division/modulo: none.
-#   char **p: yes -- p is a Ptr, shared with the caller (both call sites
-#       already hold the same Ptr instance the caller's cursor advances).
-#   goto: none in this function.
-#   char signedness: safe -- lwasm only ever handles ASCII source text.
-#   Argument order: N/A -- no argument list doubles as a mutation site.
-#   Promotion: none needed -- Python ints are already unbounded/exact.
-#   Complement: none.
-#   lookupreg: yes -- AsmState.lookupreg3(reglist, p) for the "expr,REG"
-#       form (this is the *only* place in this function that accepts PC
-#       and PCR as well as X/Y/U/S/W; the other two register switches in
-#       this function are hand-rolled because C hand-rolls them too --
-#       they intentionally accept a smaller register set).
-#
-# Interaction risks identified:
-#   - The lookahead pattern `tstr = *p + 1; skip_to_next_token(l, &tstr);
-#     if (*tstr == ',') ...` creates a SEPARATE local cursor for peeking
-#     ahead without committing the advance unless the comma actually
-#     matches. This is the opposite of the usual "share the Ptr" rule --
-#     here C is deliberately *not* aliasing pointers, so the Python
-#     translation must not share the Ptr instance for tstr either.
-#     Mitigation: construct a fresh `Ptr(p.s, p.pos + 1)` for each
-#     lookahead, and only copy its position back into `p` if the comma
-#     is actually found (mirroring `*p = tstr + 1`).
-#   - `l -> lint` is read before being written in several branches (the
-#     "expr,REG" path relies on l->lint carrying over from the possible
-#     '<'/'<<'/'>' prefix parse earlier in *this same call*, or, if no
-#     prefix was seen, on whatever the caller preset it to). Both real
-#     call sites (insn_gen.c's `goto indexed:` block and insn_indexed.c's
-#     PARSEFUNC(insn_parse_indexed)) set `l->lint = -1` immediately
-#     before calling this function -- so the Python call sites must do
-#     the same, or the "undetermined register-offset marker" path below
-#     will read a stale/wrong value.
-#   - The final marker `l->pb = (indir*0x80) | rn | (f0*0x40)` (used when
-#     the offset size could not be decided here) is a *different* bit
-#     layout than the fully-resolved postbyte forms produced elsewhere in
-#     this function (register field unshifted in bits 0-2, indirect at
-#     bit 7, not bit 4). insn_resolve_indexed_aux is the only consumer of
-#     this marker and must decode it with the matching bit layout.
-#
-# Mitigations applied:
-#   - Fresh Ptr per lookahead (see above), copied into `p` only on match.
-#   - Both callers in this module now explicitly set cl.lint = -1 before
-#     invoking insn_parse_indexed_aux, matching both real C call sites.
-#   - insn_resolve_indexed_aux (module-private _insn_resolve_indexed_aux)
-#     was re-translated in this same session to decode the marker layout
-#     this function actually produces -- see its own header comment.
-# ---------------------------------------------------------------------------
-
 def insn_parse_indexed_aux(as_, cl, p):
     """
     Faithful translation of insn_parse_indexed_aux (insn_indexed.c 39-464).
-
-    Parses one indexed-addressing operand starting at Ptr p. Side effects
-    (matching the C out-parameter line_t *l):
-        cl.pb    -- either a fully-resolved postbyte, or (when the offset
-                    size can't be decided yet) a marker byte consumed by
-                    _insn_resolve_indexed_aux.
-        cl.lint  -- 0/1/2/3 = decided (no-offset/8-bit/16-bit/5-bit), or
-                    left at -1 (or whatever the caller preset) when still
-                    undetermined.
-        p        -- advanced past the consumed operand text.
-    Errors are registered on cl via as_.register_error and the function
-    returns (void, like the C original); every error path in the C is an
-    immediate return with no further side effects, reproduced here as an
-    early Python `return`.
     """
     if curpragma(cl, PRAGMA_6809):
         reglist = _REGS9
@@ -690,9 +630,6 @@ def insn_parse_indexed_aux(as_, cl, p):
     # accumulator-offset forms: A,R  B,R  D,R  (and 6309 E,R  F,R  W,R)
     i = p.peek().upper() if p.peek() else ''
     if (i in ('A', 'B', 'D')) or (not curpragma(cl, PRAGMA_6809) and i in ('E', 'F', 'W')):
-        # Lookahead only -- a SEPARATE cursor, not shared with p, matching
-        # C's `tstr = *p + 1` local pointer that is only copied back into
-        # *p if the comma actually matches (see checklist note above).
         tstr = Ptr(p.s, p.pos + 1)
         _skip_to_next_token(cl, tstr)
         if tstr.peek() == ',':
@@ -734,9 +671,6 @@ def insn_parse_indexed_aux(as_, cl, p):
             cl.pb   = i | (indir << 4) | (rn << 5)
             cl.lint = 0
             return
-        # else: not actually an accumulator-offset (e.g. a label starting
-        # with A/B/D/E/F/W) -- fall through to expression parsing below,
-        # exactly as C does (p was never advanced, only the local tstr).
 
     # we have the "expression" types now
     if p.peek() == '<':
@@ -804,11 +738,6 @@ def insn_parse_indexed_aux(as_, cl, p):
             return
         elif cl.lint == 3:
             cl.pb = (rn << 5)
-            # NOTE: no return here -- matches C exactly. Execution falls
-            # through to the bottom of the function, where the final
-            # `if (l->lint != 3)` guard prevents cl.pb being overwritten;
-            # the 5-bit offset itself gets merged into cl.pb later, at
-            # emit time (see _insn_emit_gen_aux / insn_emit_indexed).
 
     # nnnn,W is only 16 bit (or 0 bit)
     if rn == 4:
@@ -827,7 +756,6 @@ def insn_parse_indexed_aux(as_, cl, p):
 
     # PCR? then we have PC relative addressing (like B??, LB??)
     if rn == 5 or (rn == 6 and curpragma(cl, PRAGMA_PCASPCR)):
-        # e - (addr + linelen) => e - addr - linelen
         e2 = Expr.special(lwasm_expr_linelen, cl)
         e1 = Expr.oper(OPER_MINUS, e, e2)
         e2 = Expr.oper(OPER_MINUS, e1, cl.addr)
@@ -857,30 +785,6 @@ def insn_parse_indexed_aux(as_, cl, p):
         cl.pb = (indir * 0x80) | rn | (f0 * 0x40)
 
 
-# ---------------------------------------------------------------------------
-# FUNCTION: insn_resolve_indexed_aux  (module-private: _insn_resolve_indexed_aux)
-# SOURCE:   lwtools-4.24/lwasm/insn_indexed.c lines 479-707 (approx.)
-# TRANSLATED / RE-TRANSLATED: 2026-07-17
-#
-# Not the primary subject of this translation package (that is package
-# 03), but re-translated here as required glue: this is the *only*
-# consumer of the "undetermined offset" marker byte that the newly
-# faithful insn_parse_indexed_aux (above) writes into cl.pb, and the
-# marker's bit layout changed as a direct result of that translation
-# (register field now unshifted in bits 0-2, indirect at bit 7, explicit
-# "f0" zero-offset flag at bit 6 -- see insn_parse_indexed_aux's header
-# comment). The previous hand-rolled resolve helper decoded a different,
-# incompatible layout (register pre-shifted into bits 5-6, indirect at
-# bit 4) that matched the previous hand-rolled parse helper. Plugging in
-# a faithful parser without also fixing this decoder would silently
-# corrupt every forward-referenced indexed operand. A full line-by-line
-# audit of this function (matching package 02's process: checklist,
-# independent translation, comparison, tests) is still recommended as
-# follow-up under package 03 -- this translation is a faithful, complete
-# transliteration of the C but has not been through that separate audit
-# process.
-# ---------------------------------------------------------------------------
-
 def _insn_resolve_indexed_aux(as_, cl, force, elen=0):
     """Faithful translation of insn_resolve_indexed_aux (insn_indexed.c)."""
     if cl.len != -1:
@@ -889,9 +793,6 @@ def _insn_resolve_indexed_aux(as_, cl, force, elen=0):
     e = cl.fetch_expr(0)
 
     if not (e and e.istype(TYPE_INT)):
-        # temporarily set the instruction length to see if we get a
-        # constant for our expression; if so, we can select an
-        # instruction size
         e2 = e.copy() if e else None
         ops = _ops(cl)
         cl.len = _oplen(ops[0]) + elen + 2
@@ -948,7 +849,6 @@ def _insn_resolve_indexed_aux(as_, cl, force, elen=0):
                 return
         else:
             if regfield in (5, 6):
-                # heuristic fudge-factor pass; see C comment
                 saved = as_.pretendmax
                 as_.pretendmax = 1
                 if e2 is not None:
@@ -960,7 +860,6 @@ def _insn_resolve_indexed_aux(as_, cl, force, elen=0):
                         cl.lint = 1
                         cl.pb   = 0x9C if indir else 0x8C
                         return
-        # falls through to the main branch below, exactly as C does
 
     if e and e.istype(TYPE_INT):
         v = e.intval()
@@ -1025,20 +924,96 @@ def _insn_resolve_indexed_aux(as_, cl, force, elen=0):
         return
 
 
+# ---------------------------------------------------------------------------
+# FUNCTION: _cycle_calc_ind
+# SOURCE:   presumably lwtools-4.24/lwasm/cycle.c (lwasm_cycle_calc_ind) --
+#           NOT supplied as part of this translation package. Only
+#           insn_indexed.c lines 766-829 (insn_emit_indexed_aux itself)
+#           were provided.
+#
+# STUB -- returns 0 unconditionally. See package SUMMARY.md /
+# checklist.md ("Missing dependency") for the full reasoning: this
+# reproduces cl.cycle_adj's current actual behavior (never assigned by
+# either existing call site, so it silently stays at its documented
+# zero-init) rather than fabricating a real per-mode cycle penalty.
+#
+# TODO: replace with a faithful translation once cycle.c's
+# lwasm_cycle_calc_ind is available as its own translation package.
+# ---------------------------------------------------------------------------
+def _cycle_calc_ind(cl):
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# FUNCTION: insn_emit_indexed_aux
+# SOURCE:   lwtools-4.24/lwasm/insn_indexed.c lines 766-829
+# TRANSLATED: 2026-07-18
+#
+# Pre-translation checklist results: see checklist.md in this package.
+# Summary: `offs & 0x1f` is a documented safe pattern (two's complement
+# `&` matches C on negative operands); no division/modulo/char**/goto/
+# char-signedness/promotion/complement/register-lookup concerns present
+# in this function; argument order is safe.
+#
+# Interaction risks:
+#   1. Two independent top-level `if` statements in the C (`if lint==1`
+#      stands alone; `if lint==3 / elif lint==2` is a separate pair) --
+#      preserved exactly rather than collapsed into one elif chain.
+#   2. `l->cycle_adj = lwasm_cycle_calc_ind(l)` -- see _cycle_calc_ind's
+#      own header comment above (stub, not yet translatable).
+#   3. This exact logic previously existed, duplicated and with real
+#      bugs, inline in insn_emit_indexed (see that function's updated
+#      body below, and SUMMARY.md for the full divergence list). This
+#      translation replaces that duplication.
+# ---------------------------------------------------------------------------
+def insn_emit_indexed_aux(as_, cl):
+    """Emit machine code for an indexed-addressing operand whose postbyte
+    and/or offset size may still need a final resolution/validation step
+    at emit time. Faithful translation of insn_indexed.c lines 766-829 --
+    same bytes, same errors, same internal state as lwasm 4.24."""
+
+    if cl.lint == 1:
+        e = cl.fetch_expr(0)
+        i = e.intval()
+        if i < -128 or i > 127:
+            as_.register_error(cl, E_BYTE_OVERFLOW)
+
+    # exclude expr,W since that can only be 16 bits
+    if cl.lint == 3:
+        e = cl.fetch_expr(0)
+        if e.istype(TYPE_INT):
+            offs = e.intval()
+            if (offs >= -16 and offs <= 15) or offs >= 0xFFF0:
+                cl.pb |= offs & 0x1f
+                cl.lint = 0
+            else:
+                as_.register_error(cl, E_BYTE_OVERFLOW)
+        else:
+            as_.register_error(cl, E_EXPRESSION_NOT_RESOLVED)
+    # note that extended indirect (post byte 0x9f) can only be 16 bits
+    elif cl.lint == 2 and curpragma(cl, PRAGMA_OPERANDSIZE) and (
+        cl.pb != 0xAF and cl.pb != 0xB0 and cl.pb != 0x9f
+    ):
+        e = cl.fetch_expr(0)
+        if e.istype(TYPE_INT):
+            offs = e.intval()
+            if (offs >= -128 and offs <= 127) or offs >= 0xFF80:
+                as_.register_error(cl, W_OPERAND_SIZE)
+
+    ops = _ops(cl)
+    cl.emitop(ops[0])
+    cl.emit(cl.pb)
+
+    cl.cycle_adj = _cycle_calc_ind(cl)
+
+    if cl.lint > 0:
+        e = cl.fetch_expr(0)
+        cl.emitexpr(e, cl.lint)
+
+
 def insn_parse_indexed(as_, cl, operand):
     """
-    insn_parse_indexed (LEA instructions) -- PARSEFUNC wrapper, insn_indexed.c:
-        l -> lint = -1;
-        insn_parse_indexed_aux(as, l, p);
-        if (l -> lint != -1) {
-            if (l -> lint == 3) l->len = OPLEN(ops[0]) + 1;
-            else                l->len = OPLEN(ops[0]) + l->lint + 1;
-        }
-    Note: real C does NOT set minlen/maxlen here (unlike the general
-    gen_aux indexed path) -- matched faithfully; those fields are unused
-    elsewhere in this codebase (grep confirms no reader in passes.py /
-    pass1.py), so this is a safe, faithful correction from the previous
-    ad hoc version, which had set them unconditionally.
+    insn_parse_indexed (LEA instructions) -- PARSEFUNC wrapper, insn_indexed.c.
     """
     p = Ptr(operand)
     cl.lint  = -1
@@ -1054,12 +1029,7 @@ def insn_parse_indexed(as_, cl, operand):
 
 def insn_resolve_indexed(as_, cl, force):
     """
-    RESOLVEFUNC(insn_resolve_indexed), insn_indexed.c:
-        if (l -> lint == -1) insn_resolve_indexed_aux(as, l, force, 0);
-        if (l -> lint != -1 && l -> pb != -1) {
-            if (l -> lint == 3) l->len = OPLEN(ops[0]) + 1;
-            else                l->len = OPLEN(ops[0]) + l->lint + 1;
-        }
+    RESOLVEFUNC(insn_resolve_indexed), insn_indexed.c.
     """
     if cl.lint == -1:
         _insn_resolve_indexed_aux(as_, cl, force, 0)
@@ -1071,22 +1041,22 @@ def insn_resolve_indexed(as_, cl, force):
             cl.len = _oplen(ops[0]) + cl.lint + 1
 
 def insn_emit_indexed(as_, cl):
-    ops = _ops(cl)
-    cl.emitop(ops[0])
-    e = cl.fetch_expr(0)
-    if cl.lint == 3:
-        if e and e.istype(TYPE_INT):
-            offs = e.intval()
-            if (offs >= -16 and offs <= 15) or offs >= 0xFFF0:
-                cl.pb = (cl.pb & 0xE0) | (offs & 0x1F)
-                cl.lint = 0
-            else:
-                cl.as_.register_error(cl, E_BYTE_OVERFLOW)
-    cl.emit(cl.pb)
-    if cl.lint == 1 and e:
-        cl.emitexpr(e, 1)
-    elif cl.lint == 2 and e:
-        cl.emitexpr(e, 2)
+    """
+    RESOLVEFUNC-paired EMITFUNC for LEA-style pure indexed-addressing
+    instructions.
+
+    2026-07-18: rewritten to delegate to insn_emit_indexed_aux, which is
+    exactly this function's C role (insn_indexed.c lines 766-829: fixed
+    ops[0] opcode, then lint/pb-based postbyte resolution). The previous
+    body here was a hand-rolled partial reimplementation of the same
+    logic with real bugs relative to the C source -- see SUMMARY.md for
+    the full before/after and the specific divergences found (missing
+    lint==1 byte-overflow check; missing E_EXPRESSION_NOT_RESOLVED error,
+    which also silently dropped the offset bytes entirely when
+    triggered; missing W_OPERAND_SIZE warning path; cl.cycle_adj never
+    assigned).
+    """
+    insn_emit_indexed_aux(as_, cl)
 
 
 
@@ -1260,68 +1230,8 @@ def insn_emit_relgen(as_, cl):
 # Register-to-register  (insn_rtor.c) — TFR, EXG
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Register codes for 6809 and 6309 (r0, r1 -> 4-bit nibbles)
-# D X Y U S PC  A B CC DP  (6809)
-# D X Y U S PC W V A B CC DP 0 0 E F  (6309 — extra registers)
 _RTOR_REGS  = 'D X Y U S PCW V A B CCDP0 0 E F '   # 6309
 _RTOR_REGS9 = 'D X Y U S PC    A B CCDP        '    # 6809
-
-# ---------------------------------------------------------------------------
-# FUNCTION: insn_parse_rtor
-# SOURCE:   lwtools-4.24/lwasm/insn_rtor.c lines 25-56
-# TRANSLATED: 2026-07-17
-#
-# Pre-translation checklist results:
-#   Integer width: none -- (r0<<4)|r1 is a postbyte-range int (max 0xFF
-#       by construction, both nibbles 0-15), safe per TRANSLATION_GUIDE's
-#       "Known Safe Patterns" table.
-#   Division/modulo: none.
-#   char **p: yes -- p is a Ptr, shared with the caller (same instance
-#       passed through the whole function; lookupreg2 mutates it in place).
-#   goto: none.
-#   char signedness: safe -- ASCII assembly source only.
-#   Argument order: N/A -- no function call doubles as a mutation site.
-#   Promotion: none needed.
-#   Complement: none.
-#   lookupreg: yes -- AsmState.lookupreg2(regs, p), called twice, using
-#       the 6309 or 6809 register table depending on PRAGMA_6809.
-#
-# Interaction risks identified:
-#   - `if (r0 < 0 || *(*p)++ != ',')` is C's post-increment-in-condition
-#     idiom (TRANSLATION_GUIDE checklist item 6/9 territory, generalized:
-#     a mutating dereference embedded in a boolean expression, not just
-#     in a function-argument slot). `||` short-circuits, so:
-#       * if r0 < 0, the right operand is NEVER evaluated -- p is not
-#         touched at all beyond wherever lookupreg2 + skip_to_next_token
-#         already left it.
-#       * if r0 >= 0, the current character is read AND p is advanced by
-#         one, UNCONDITIONALLY, before the comparison against ',' happens.
-#         This means p advances past the offending character even on the
-#         "not a comma" error path -- not only on the comma-found path.
-#     The previous translation (existing.py, and the identical code
-#     already in this file) wrote `if r0 < 0 or p.peek() != ',': error
-#     else: p.advance()`, which only advances p in the success (comma
-#     found) branch -- silently diverging from C's unconditional advance
-#     whenever r0 >= 0 but the next character isn't a comma.
-#   - This divergence turns out to be unobservable through the top-level
-#     fidelity harness (byte/error-count comparison against real lwasm):
-#     pass1.py's post-parse "unconsumed operand" check is gated on
-#     `not cl.err` (mirroring C's `!(cl->err)`), and every error path in
-#     this function already calls as_.register_error() first, so cl.err
-#     is always already set by the time that outer check would run --
-#     it never gets a chance to notice the wrong cursor position. Fidelity
-#     to the C source's actual pointer arithmetic is still required (per
-#     TRANSLATION_GUIDE: silent divergences that don't happen to matter
-#     *yet* are exactly the ones that bite on some other caller path
-#     later), so this is fixed to match C exactly regardless.
-#
-# Mitigations applied:
-#   - Replaced `p.peek() != ','` short-cut with an explicit
-#     "read-then-advance-then-compare" sequence that fires only when
-#     r0 >= 0 (preserving the || short-circuit), matching C's unconditional
-#     post-increment exactly: the character is consumed via p.advance()
-#     before the comma comparison, on both the error and success paths.
-# ---------------------------------------------------------------------------
 
 def insn_parse_rtor(as_, cl, operand):
     p = Ptr(operand)
@@ -1333,9 +1243,6 @@ def insn_parse_rtor(as_, cl, operand):
     if r0 < 0:
         as_.register_error(cl, E_OPERAND_BAD); r0 = r1 = 0
     else:
-        # C: *(*p)++ != ',' -- read the current char AND advance p by one
-        # unconditionally (short-circuited || means we only get here when
-        # r0 >= 0), THEN compare what was read against ','.
         c = p.peek()
         p.advance()
         if c != ',':
@@ -1361,8 +1268,6 @@ def insn_emit_rtor(as_, cl):
 # ─────────────────────────────────────────────────────────────────────────────
 # Register list  (insn_rlist.c) — PSHS, PULS, PSHU, PULU
 # ─────────────────────────────────────────────────────────────────────────────
-# Register bits for stack list:
-# bit 0=CC  1=A  2=B  3=DP  4=X  5=Y  6=U/S  7=PC
 
 _RLIST_REGS = 'CCA B DPX Y U PCD S '
 
@@ -1396,7 +1301,6 @@ def insn_parse_rlist(as_, cl, operand):
             if curpragma(cl, PRAGMA_NEWSOURCE):
                 while p.peek() and p.peek().isspace(): p.advance()
 
-        # U and S exclusivity check
         if (ops[0] & 2):   # PSHU/PULU
             if rn == 6:    # U not allowed
                 as_.register_error2(cl, E_REGISTER_BAD, "'%s'", 'u')
@@ -1406,11 +1310,9 @@ def insn_parse_rlist(as_, cl, operand):
                 as_.register_error2(cl, E_REGISTER_BAD, "'%s'", 's')
                 return p.remaining()
 
-        # Map register bits
-        # _RLIST_REGS table: CC=0 A=1 B=2 DP=3 X=4 Y=5 U=6 PC=7 D=8 S=9
         if rn == 7:        # PC
             rb |= 0x80
-        elif rn == 8:      # D = A|B (lwasm treats D as synonym for A,B in rlist)
+        elif rn == 8:      # D = A|B
             rb |= 0x06
         elif rn == 9:      # S
             rb |= 0x40
@@ -1427,60 +1329,14 @@ def insn_parse_rlist(as_, cl, operand):
 def insn_resolve_rlist(as_, cl, force):
     pass
 
-# ---------------------------------------------------------------------------
-# FUNCTION: _cycle_calc_rlist
-# SOURCE:   lwtools-4.24/lwasm/cycle.c lines 656-670 (lwasm_cycle_calc_rlist)
-#
-# Additional-cycle calculation for the rlist postbyte (PSHS/PULS/PSHU/PULU).
-# Needed as a helper because insn_emit_rlist (source.c) calls it directly;
-# not yet reachable from any other translated function.
-#
-# Pre-translation checklist:
-#   Integer width: none -- cl.pb already constrained to a byte value by the
-#     parse-time assignment (insn_parse_rlist); no masking needed here.
-#   Division/modulo: none
-#   char **p: N/A
-#   goto: none
-#   char signedness: N/A
-#   Argument order: N/A -- no function-call arguments with side effects
-#   Promotion: safe -- plain int accumulation, no truncation on assignment
-#   Complement: none
-#   lookupreg: N/A
-# ---------------------------------------------------------------------------
 def _cycle_calc_rlist(cl):
-    """lwasm_cycle_calc_rlist(cl): extra ticks for pushed/pulled registers.
-
-    1 cycle for each of the four 8-bit registers (bits 0-3: CC,A,B,DP),
-    2 cycles for each of the four 16-bit registers (bits 4-7: X,Y,U/S,PC).
-    """
+    """lwasm_cycle_calc_rlist(cl): extra ticks for pushed/pulled registers."""
     cycles = 0
     for i in range(8):
         if cl.pb & (1 << i):
             cycles += 1 if i <= 3 else 2
     return cycles
 
-# ---------------------------------------------------------------------------
-# FUNCTION: insn_emit_rlist
-# SOURCE:   lwtools-4.24/lwasm/insn_rlist.c lines 96-108
-# TRANSLATED: 2026-07-17
-#
-# Pre-translation checklist results:
-#   Integer width: none -- no fixed-width assignments
-#   Division/modulo: none
-#   char **p: N/A
-#   goto: none
-#   char signedness: safe
-#   Argument order: safe -- no argument-position side effects
-#   Promotion: safe
-#   Complement: none
-#   lookupreg: N/A
-#
-# Interaction risks: cl.pb must already reflect the final rlist postbyte
-#   (set during resolve/parse) by the time cycle_adj is computed here --
-#   confirmed by insn_resolve_rlist being a no-op and cl.pb being set at
-#   parse time in insn_parse_rlist.
-# Mitigations applied: none needed
-# ---------------------------------------------------------------------------
 def insn_emit_rlist(as_, cl):
     if cl.lint == 1:
         insn_emit_imm8(as_, cl); return
@@ -1492,19 +1348,8 @@ def insn_emit_rlist(as_, cl):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Logic-mem (6309 AIM/EIM/OIM/TIM) — stub
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Logic-mem (6309 AIM/EIM/OIM/TIM)  (insn_logicmem.c)
 # ─────────────────────────────────────────────────────────────────────────────
-# Syntax: AIM #imm,<gen-mode-operand>  (also OIM/EIM/TIM)
-# The immediate value is saved in expression slot 100 (matching the C
-# source's use of that slot number as an "extra" operand outside the
-# normal 0/1/2 slots used by the general addressing-mode machinery), then
-# the remaining operand is parsed exactly like any other general-mode
-# instruction, with elen=1 to account for the extra immediate byte that
-# will be emitted alongside the addressing-mode bytes.
 
 def insn_parse_logicmem(as_, cl, operand):
     p = Ptr(operand)
@@ -1534,7 +1379,7 @@ def insn_emit_logicmem(as_, cl):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6309 conv instructions (NEGQ, TSTQ etc.) — stub
+# 6309 conv instructions (NEGQ, TSTQ etc.)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def insn_parse_conv(as_, cl, operand):
@@ -1552,21 +1397,12 @@ def insn_emit_conv(as_, cl):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TFM (6309) — stub
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ─────────────────────────────────────────────────────────────────────────────
 # TFM (6309 block transfer)  (insn_tfm.c)
 # ─────────────────────────────────────────────────────────────────────────────
-# Syntax: TFM r0+,r1+  /  TFM r0-,r1-  /  TFM r0+,r1  /  TFM r0,r1+
-# Only D, X, Y, U, S are valid TFM registers (indices 0-4 in _TFM_REGLIST).
-# The four legal direction combinations select one of four distinct
-# opcodes (ops[0..3]); any other combination is E_UNKNOWN_OPERATION.
 
-_TFM_REGLIST = "DXYUS   AB  00EF"   # index = register field value (0-4 legal)
+_TFM_REGLIST = "DXYUS   AB  00EF"
 
 def _tfm_reg(p):
-    """Match one TFM register letter, return its _TFM_REGLIST index or None."""
     c = p.peek()
     if not c:
         return None
@@ -1606,13 +1442,10 @@ def insn_parse_tfm(as_, cl, operand):
     if p.peek() and not p.peek().isspace():
         as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
 
-    # Only D, X, Y, U, S (indices 0-4) are valid TFM registers.
     if r0 > 4 or r1 > 4:
-        bad = r1 if r0 < r1 else r0   # matches C: "if (r0 < r1) r0 = r1;" then uses reglist[r0]
+        bad = r1 if r0 < r1 else r0
         as_.register_error2(cl, E_REGISTER_BAD, "'%c'", _TFM_REGLIST[bad])
-        # C does not return here -- it falls through into the switch below.
 
-    # tfm==5: r0+,r1+ / tfm==10: r0-,r1- / tfm==1: r0+,r1 / tfm==4: r0,r1+
     if tfm == 5:
         cl.lint = ops[0]
     elif tfm == 10:
@@ -1638,11 +1471,8 @@ def insn_emit_tfm(as_, cl):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Inter-register postbyte form (6309 TFR-style: ADDR/SUBR/CMPR/ANDR/ORR/
-# EORR/ADCR/SBCR and similar r0,r1 instructions)  (insn_tfm.c insn_parse_tfmrtor)
+# EORR/ADCR/SBCR)  (insn_tfm.c insn_parse_tfmrtor)
 # ─────────────────────────────────────────────────────────────────────────────
-# Any of the 16 TFR/EXG-style registers is legal here (unlike TFM itself,
-# which restricts to D/X/Y/U/S) -- matches lwasm_lookupreg2 over the full
-# register table: D,X,Y,U,S,PC,W,V,A,B,CC,DP,0,0,E,F.
 
 _TFMRTOR_REGS = "D X Y U S       A B     0 0 E F "
 
@@ -1675,18 +1505,8 @@ def insn_emit_tfmrtor(as_, cl):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Bitbit (6309 BAND/BEOR/BIOR/BOR/LDBT/STBT) — stub
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Bitbit (6309 BAND/BEOR/BIOR/BOR/LDBT/STBT)  (insn_bitbit.c)
 # ─────────────────────────────────────────────────────────────────────────────
-# Syntax: BAND CC,srcbit,dstbit,<addr   (also A,/B,/CC, and the other 5
-# mnemonics in this family). Postbyte = (reg<<6)|(srcbit<<3)|dstbit; the
-# addressing byte is always a direct-page (1-byte) address, exactly like
-# the C source -- these instructions "cannot tolerate external references"
-# per the C comment, i.e. the address must resolve to a single byte offset
-# from the current direct page.
 
 def insn_parse_bitbit(as_, cl, operand):
     p = Ptr(operand)
