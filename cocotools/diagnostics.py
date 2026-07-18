@@ -112,17 +112,32 @@ CC_NEUTRAL = {
     'JSR', 'BSR',
 }
 
-# Instructions that clobber CC via data load -- the suspect middle instruction
+# Instructions that clobber N/Z/V/C via ordinary data movement -- the
+# suspect middle instruction a programmer accidentally inserts between a
+# compare/test and the branch that depends on it. Loading any of D's
+# constituent parts, or any index/stack register, or clearing any
+# accumulator, sets N/Z (and clears V/C on CLR) as a side effect of the
+# move -- not as the programmer's intent -- and will silently invalidate
+# a preceding CMPx/TSTx/BITx if it lands between that compare and its
+# branch.
+#
+# NOTE (2026-07-17): this used to be defined twice in this module -- a
+# complete version here, immediately followed by a narrower
+# {'LDA','LDB','LDD'}-only redefinition that silently won (plain Python
+# name rebinding, no error). That meant LDX/LDY/LDU/LDS/CLRA/CLRB/CLR
+# never triggered W2001 at all, including the CMPX/LDX/BNE and
+# TSTA/CLRA/BEQ patterns -- exactly the class of mistake this diagnostic
+# exists to catch. See diagnostics_finding_cc_clobbering_loads_shadowed.txt
+# for the full writeup. Fixed by merging into this single definition;
+# no other code changes were needed since source_diag.py already
+# consumes this set generically (by membership, not by mnemonic), and
+# the "no prior compare -> load is the intended CC setter" safeguard in
+# source_diag.py's _check_cc_clobber_backward() is unaffected by the
+# set's contents -- it's keyed on structure, not on which specific
+# mnemonic tripped it.
 CC_CLOBBERING_LOADS = {
     'LDA', 'LDB', 'LDD', 'LDX', 'LDY', 'LDU', 'LDS',
     'CLRA', 'CLRB', 'CLR',
-}
-
-# Instructions that clobber N/Z/V/C (the ones branches care about)
-# specifically those the programmer would accidentally insert between
-# a compare and its branch
-CC_CLOBBERING_LOADS = {
-    'LDA', 'LDB', 'LDD',  # very common mistake: load D after CMPD
 }
 
 # Conditional branch mnemonics

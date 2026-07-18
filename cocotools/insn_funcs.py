@@ -1266,23 +1266,85 @@ def insn_emit_relgen(as_, cl):
 _RTOR_REGS  = 'D X Y U S PCW V A B CCDP0 0 E F '   # 6309
 _RTOR_REGS9 = 'D X Y U S PC    A B CCDP        '    # 6809
 
+# ---------------------------------------------------------------------------
+# FUNCTION: insn_parse_rtor
+# SOURCE:   lwtools-4.24/lwasm/insn_rtor.c lines 25-56
+# TRANSLATED: 2026-07-17
+#
+# Pre-translation checklist results:
+#   Integer width: none -- (r0<<4)|r1 is a postbyte-range int (max 0xFF
+#       by construction, both nibbles 0-15), safe per TRANSLATION_GUIDE's
+#       "Known Safe Patterns" table.
+#   Division/modulo: none.
+#   char **p: yes -- p is a Ptr, shared with the caller (same instance
+#       passed through the whole function; lookupreg2 mutates it in place).
+#   goto: none.
+#   char signedness: safe -- ASCII assembly source only.
+#   Argument order: N/A -- no function call doubles as a mutation site.
+#   Promotion: none needed.
+#   Complement: none.
+#   lookupreg: yes -- AsmState.lookupreg2(regs, p), called twice, using
+#       the 6309 or 6809 register table depending on PRAGMA_6809.
+#
+# Interaction risks identified:
+#   - `if (r0 < 0 || *(*p)++ != ',')` is C's post-increment-in-condition
+#     idiom (TRANSLATION_GUIDE checklist item 6/9 territory, generalized:
+#     a mutating dereference embedded in a boolean expression, not just
+#     in a function-argument slot). `||` short-circuits, so:
+#       * if r0 < 0, the right operand is NEVER evaluated -- p is not
+#         touched at all beyond wherever lookupreg2 + skip_to_next_token
+#         already left it.
+#       * if r0 >= 0, the current character is read AND p is advanced by
+#         one, UNCONDITIONALLY, before the comparison against ',' happens.
+#         This means p advances past the offending character even on the
+#         "not a comma" error path -- not only on the comma-found path.
+#     The previous translation (existing.py, and the identical code
+#     already in this file) wrote `if r0 < 0 or p.peek() != ',': error
+#     else: p.advance()`, which only advances p in the success (comma
+#     found) branch -- silently diverging from C's unconditional advance
+#     whenever r0 >= 0 but the next character isn't a comma.
+#   - This divergence turns out to be unobservable through the top-level
+#     fidelity harness (byte/error-count comparison against real lwasm):
+#     pass1.py's post-parse "unconsumed operand" check is gated on
+#     `not cl.err` (mirroring C's `!(cl->err)`), and every error path in
+#     this function already calls as_.register_error() first, so cl.err
+#     is always already set by the time that outer check would run --
+#     it never gets a chance to notice the wrong cursor position. Fidelity
+#     to the C source's actual pointer arithmetic is still required (per
+#     TRANSLATION_GUIDE: silent divergences that don't happen to matter
+#     *yet* are exactly the ones that bite on some other caller path
+#     later), so this is fixed to match C exactly regardless.
+#
+# Mitigations applied:
+#   - Replaced `p.peek() != ','` short-cut with an explicit
+#     "read-then-advance-then-compare" sequence that fires only when
+#     r0 >= 0 (preserving the || short-circuit), matching C's unconditional
+#     post-increment exactly: the character is consumed via p.advance()
+#     before the comma comparison, on both the error and success paths.
+# ---------------------------------------------------------------------------
+
 def insn_parse_rtor(as_, cl, operand):
     p = Ptr(operand)
     ops  = _ops(cl)
     regs = _RTOR_REGS9 if curpragma(cl, PRAGMA_6809) else _RTOR_REGS
 
     r0 = AsmState.lookupreg2(regs, p)
-    if curpragma(cl, PRAGMA_NEWSOURCE):
-        while p.peek() and p.peek().isspace(): p.advance()
-    if r0 < 0 or p.peek() != ',':
+    _skip_to_next_token(cl, p)
+    if r0 < 0:
         as_.register_error(cl, E_OPERAND_BAD); r0 = r1 = 0
     else:
+        # C: *(*p)++ != ',' -- read the current char AND advance p by one
+        # unconditionally (short-circuited || means we only get here when
+        # r0 >= 0), THEN compare what was read against ','.
+        c = p.peek()
         p.advance()
-        if curpragma(cl, PRAGMA_NEWSOURCE):
-            while p.peek() and p.peek().isspace(): p.advance()
-        r1 = AsmState.lookupreg2(regs, p)
-        if r1 < 0:
+        if c != ',':
             as_.register_error(cl, E_OPERAND_BAD); r0 = r1 = 0
+        else:
+            _skip_to_next_token(cl, p)
+            r1 = AsmState.lookupreg2(regs, p)
+            if r1 < 0:
+                as_.register_error(cl, E_OPERAND_BAD); r0 = r1 = 0
 
     cl.pb  = (r0 << 4) | r1
     cl.len = _oplen(ops[0]) + 1

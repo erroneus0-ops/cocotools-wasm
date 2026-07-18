@@ -516,6 +516,49 @@ BEHAVIOR_TESTS = [
      "         ORG $3F00\n         LDA FAR,PCR\n" + "         NOP\n" * 40 +
      "FAR      RTS\n         END\n",
      False),
+
+    # ── insn_parse_rtor: added during the 2026-07-17 faithful translation
+    #    audit (translation_packages/06_insn_parse_rtor). ─────────────────────
+    # A register pair not exercised by any prior TFR/EXG test in this file
+    # (existing tests cover D,X / A,B / CC,DP / X,Y / S,U / PC,X for TFR
+    # and D,X / A,B for EXG) -- new success-path coverage for EXG.
+    ("rtor-exg-cc-dp",
+     "         ORG $3F00\nTEST     EXG   CC,DP\n         END\n",
+     False),
+
+    # r0 < 0: first register name doesn't match any entry in the lookup
+    # table at all. Exercises the `r0 < 0` half of the `||` short-circuit
+    # in `if (r0 < 0 || *(*p)++ != ',')` -- this branch must NOT read or
+    # advance past the comma-position character (see checklist note on
+    # insn_parse_rtor above); confirmed here only at the error/no-error
+    # level (both cocotools and real lwasm single-error identically),
+    # since the cursor-position divergence itself isn't observable
+    # through the top-level harness (see the unit-level test below for
+    # that).
+    ("rtor-bad-first-register",
+     "         ORG $3F00\nTEST     TFR   Q,X\n         END\n",
+     True),
+
+    # r1 < 0: valid first register and comma, but the second register
+    # name doesn't match. Exercises the nested `if (r1 < 0)` branch.
+    ("rtor-bad-second-register",
+     "         ORG $3F00\nTEST     TFR   X,Q\n         END\n",
+     True),
+
+    # Missing comma: valid first register, but the next character is a
+    # space instead of ','. This is the exact branch where C's
+    # `*(*p)++ != ','` consumes one character unconditionally (r0 >= 0)
+    # before comparing -- the branch the previous translation got wrong
+    # (it never advanced p here at all). At the whole-assembler level
+    # this still just produces a single "Bad operand" error from both
+    # cocotools and real lwasm (cl.err gates the outer unconsumed-operand
+    # check before the wrong cursor position could ever matter) -- so
+    # this test only confirms the branch is reached and single-errors
+    # correctly; see the direct unit-level test below for a check of the
+    # actual cursor position C requires.
+    ("rtor-missing-comma",
+     "         ORG $3F00\nTEST     TFR   A B\n         END\n",
+     True),
 ]
 
 
@@ -712,6 +755,101 @@ STRUCTURAL_TESTS = [
      "         ORG $3F00\nTEST     PSHS  #$06\n         END\n",
      {'pb': 0x00, 'cycle_adj': 0}),
 ]
+
+
+# ── Unit-level tests -- direct function calls, bypassing full assembly ───────
+# Some C behavior never reaches an externally-observable difference through
+# the full assemble-and-compare-bytes harness above, because a downstream
+# guard (here: pass1's `!(cl->err)` check before reporting "unconsumed
+# operand") happens to swallow the consequence every time. That doesn't make
+# the underlying C behavior optional to replicate -- a different call site,
+# or a future change to that downstream guard, could make the divergence
+# visible. These tests call the translated function directly and check its
+# return value / arguments precisely against what the C source specifies.
+#
+# Added during the 2026-07-17 insn_parse_rtor audit
+# (translation_packages/06_insn_parse_rtor): C's
+# `if (r0 < 0 || *(*p)++ != ',')` advances the cursor by one character
+# UNCONDITIONALLY whenever r0 >= 0 -- even down the "not a comma" error
+# path -- because `*(*p)++` is a read-and-advance that happens before the
+# comparison, not after. The previous translation only advanced the
+# cursor on the comma-found (success) path. See insn_parse_rtor's own
+# checklist comment in cocotools/insn_funcs.py for the full analysis.
+
+UNIT_TESTS_RTOR = [
+    # (description, operand_string, expected_remaining, expected_errorcount)
+
+    # r0 >= 0 ('A' matches), next char is a space, not a comma. C reads
+    # the space, advances past it, THEN finds it isn't ',' and errors.
+    # Expected remaining is "B" (space consumed) -- NOT " B".
+    ("rtor-unit-missing-comma-consumes-char", "A B", "B", 1),
+
+    # Same shape, but with two non-register characters after the valid
+    # first register, to make sure only exactly one char is consumed
+    # (not e.g. skipped-to-next-token past both).
+    ("rtor-unit-missing-comma-consumes-exactly-one-char", "A  X", " X", 1),
+
+    # r0 < 0 (bogus first register): the `||` must short-circuit, so the
+    # cursor must NOT advance past the first character at all -- it
+    # should still be sitting right where lookupreg2 left it (lookupreg2
+    # itself does not advance p on a failed match).
+    ("rtor-unit-bad-r0-no-advance", "Q,X", "Q,X", 1),
+
+    # Success path (comma present): cursor must land exactly after both
+    # registers, with nothing consumed beyond that.
+    ("rtor-unit-success-exact-cursor", "A,B", "", 0),
+]
+
+
+def run_unit_tests(verbose=False):
+    """Run direct-call unit tests (currently: insn_parse_rtor cursor tests)."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from cocotools.lwasm_core import AsmState, Line
+    from cocotools.insn_funcs import insn_parse_rtor
+    from cocotools.instab import INSTAB
+
+    tfr_idx = None
+    for i, ie in enumerate(INSTAB):
+        if ie.parse is insn_parse_rtor:
+            tfr_idx = i
+            break
+
+    passed = 0
+    failed = 0
+    errors = []
+
+    print(f"\nRunning {len(UNIT_TESTS_RTOR)} unit tests...")
+
+    for desc, operand, expected_remaining, expected_errcount in UNIT_TESTS_RTOR:
+        as_ = AsmState()
+        cl = Line(as_)
+        cl.insn = tfr_idx
+
+        remaining = insn_parse_rtor(as_, cl, operand)
+
+        ok = (remaining == expected_remaining and
+              as_.errorcount == expected_errcount)
+
+        if ok:
+            if verbose:
+                print(f"  PASS  [{desc}] remaining={remaining!r} "
+                      f"errorcount={as_.errorcount}")
+            passed += 1
+        else:
+            msg = (f"FAIL  [{desc}]\n"
+                   f"       operand:            {operand!r}\n"
+                   f"       expected remaining: {expected_remaining!r}\n"
+                   f"       actual remaining:   {remaining!r}\n"
+                   f"       expected errcount:  {expected_errcount}\n"
+                   f"       actual errcount:    {as_.errorcount}")
+            print(f"  {msg}")
+            errors.append(msg)
+            failed += 1
+
+    print(f"Unit results: {passed} passed, {failed} failed "
+          f"out of {len(UNIT_TESTS_RTOR)} tests")
+    return failed == 0
 
 
 # ── Expression-simplification tests (lw_expr_simplify_l / _go) ───────────────
@@ -1235,4 +1373,5 @@ if __name__ == '__main__':
                                     tests=BEHAVIOR_TESTS_6309, label='behavioral (6309-only)')
     success3 = run_structural_tests(mode6309=args.mode6309, verbose=args.verbose)
     success4 = run_expression_simplify_tests(verbose=args.verbose)
-    sys.exit(0 if (success1 and success2 and success2b and success3 and success4) else 1)
+    success5 = run_unit_tests(verbose=args.verbose)
+    sys.exit(0 if (success1 and success2 and success2b and success3 and success4 and success5) else 1)
