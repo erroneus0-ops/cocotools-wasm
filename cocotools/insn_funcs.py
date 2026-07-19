@@ -1557,6 +1557,14 @@ def insn_emit_tfmrtor(as_, cl):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def insn_parse_bitbit(as_, cl, operand):
+    # ---------------------------------------------------------------------------
+    # FUNCTION: insn_parse_bitbit
+    # SOURCE:   lwtools-4.24/lwasm/insn_bitbit.c lines 30-99
+    # Fix by 13 Claude: added two missing _skip_to_next_token calls
+    #   (1) after register letter, before first comma
+    #   (2) after second comma, before '<' base-page check
+    # Also fixed comma check to always advance cursor (matches C's *(*p)++)
+    # ---------------------------------------------------------------------------
     p = Ptr(operand)
     if not p.peek():
         as_.register_error(cl, E_REGISTER_BAD); return p.remaining()
@@ -1572,27 +1580,37 @@ def insn_parse_bitbit(as_, cl, operand):
     else:
         as_.register_error(cl, E_REGISTER_BAD); return p.remaining()
 
-    if p.peek() != ',':
+    # lwasm_skip_to_next_token(l, p) -- missing in original translation
+    _skip_to_next_token(cl, p)
+
+    # *(*p)++ != ',' -- advance regardless of match (C semantics)
+    c = p.peek(); p.advance()
+    if c != ',':
         as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
-    p.advance()
+
     e = as_.parse_expr(p)
     if not e:
         as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
     cl.save_expr(0, e)
 
-    if p.peek() != ',':
+    c = p.peek(); p.advance()
+    if c != ',':
         as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
-    p.advance()
+
     e = as_.parse_expr(p)
     if not e:
         as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
     cl.save_expr(1, e)
 
-    if p.peek() != ',':
+    c = p.peek(); p.advance()
+    if c != ',':
         as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
-    p.advance()
+
+    # lwasm_skip_to_next_token(l, p) -- missing in original translation
+    _skip_to_next_token(cl, p)
+
     if p.peek() == '<':
-        p.advance()   # ignore base-page address modifier, matches C
+        p.advance()   # ignore base-page address modifier
     e = as_.parse_expr(p)
     if not e:
         as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
