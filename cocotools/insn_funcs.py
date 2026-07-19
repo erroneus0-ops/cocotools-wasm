@@ -1412,6 +1412,52 @@ def _tfm_reg(p):
     p.advance()
     return idx
 
+# ---------------------------------------------------------------------------
+# FUNCTION: insn_parse_tfm
+# SOURCE:   lwtools-4.24/lwasm/insn_tfm.c lines 27-118
+# TRANSLATED: 2026-07-18
+#
+# Pre-translation checklist results:
+#   * Integer width: no fixed-width assignments; tfm/r0/r1 are small ints
+#     (0-15), pb = (r0<<4)|r1 stays within 0-255 by construction -- no mask
+#     needed (max (15<<4)|15 = 0xFF).
+#   * Division/modulo: none.
+#   * char **p: found -- single cursor `p`, mapped to one shared Ptr
+#     instance; no aliasing (only one char** parameter here).
+#   * goto: none.
+#   * char signedness: low risk -- operand is ASCII assembly source.
+#   * Argument order: no (*p)++ used in function-call argument position.
+#   * Promotion: safe -- all values are small ints.
+#   * Complement: none.
+#   * lookupreg: N/A -- uses direct reglist strchr, not lookupreg2/3.
+#
+# Interaction risks identified:
+#   - `lwasm_skip_to_next_token(l, p)` is called TWICE in the C source:
+#     once after the optional +/- following r0 (before the comma check),
+#     and once after the comma (before parsing r1). This only has an
+#     effect under PRAGMA_NEWSOURCE (it's a no-op otherwise), so it is
+#     easy to miss without producing a visible failure in default-mode
+#     tests. The version of this function found in the repo at translation
+#     time (existing.py / the prior insn_funcs.py body) omitted both calls.
+#   - `strchr(reglist, toupper(*(*p)++))` when the operand has already
+#     been fully consumed (**p == '\0') matches C's *own string
+#     terminator* rather than returning NULL, because strchr's search
+#     includes the terminating null byte. In the real C function this
+#     leads into an out-of-bounds read one line later (**p is
+#     dereferenced again without having verified any bytes remain), which
+#     is undefined behavior in the C source itself -- there is no defined
+#     lwasm 4.24 behavior to reproduce here. The translation instead
+#     treats "no character left" as an immediate E_REGISTER_BAD, which is
+#     the well-defined, safe choice and matches the existing translation's
+#     prior behavior for this specific edge case.
+#
+# Mitigations applied:
+#   - Added the two missing `_skip_to_next_token(cl, p)` calls so
+#     PRAGMA_NEWSOURCE sources with whitespace around the comma parse
+#     identically to lwasm 4.24.
+#   - No mitigation applied for the strchr/NUL-terminator UB case (see
+#     above) -- left as the pre-existing, defined, safe behavior.
+# ---------------------------------------------------------------------------
 def insn_parse_tfm(as_, cl, operand):
     p = Ptr(operand)
     ops = _ops(cl)
@@ -1426,10 +1472,12 @@ def insn_parse_tfm(as_, cl, operand):
     elif p.peek() == '-':
         p.advance(); tfm = 2
 
+    _skip_to_next_token(cl, p)
     if p.peek() != ',':
         as_.register_error(cl, E_UNKNOWN_OPERATION); return p.remaining()
     p.advance()
 
+    _skip_to_next_token(cl, p)
     r1 = _tfm_reg(p)
     if r1 is None:
         as_.register_error(cl, E_REGISTER_BAD); return p.remaining()
