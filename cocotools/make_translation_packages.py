@@ -283,13 +283,19 @@ from cocotools.c_compat import (
 
 ## Verification
 
-After translating:
-1. Run `python cocotools/test_fidelity.py` -- all existing tests must pass
-2. Add 3+ new test cases covering branches in this function
-3. Run `-v` to inspect structural state for new tests
+You do not need to run the fidelity harness. The project maintainer
+will run it against your deliverable.
 
-Do not modify existing tests to make them pass.
-Fix the translation until the tests pass.
+Your verification is:
+1. Trace through your Python translation against the C source line by line
+2. Confirm every branch, every edge case, every sentinel value matches
+3. Write 3+ standalone test cases (using stub objects if needed) that
+   exercise the branches specific to this function
+4. Document any divergences found in SUMMARY.md with:
+   - The C code
+   - The old Python code  
+   - Your corrected Python code
+   - Why the old code was wrong
 
 ## Deliverables (required at end of session)
 
