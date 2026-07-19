@@ -144,6 +144,11 @@ def make_checklist(fname, r):
 
 Metrics: {r['lines']} lines, {r['branches']} branches, {len(r['gotos'])} gotos
 
+Note on scope: this brief format is uniform across all 16 packages
+regardless of function size. If this function is small, the infrastructure
+exists because earlier packages were significantly more complex.
+The task size varies; the process stays the same.
+
 ## 1. Integer width at assignment sites
 Check every assignment destination type.
 Bit mask operations found (may need `c_uint8` etc.):
@@ -205,6 +210,11 @@ behavior exactly -- same bytes, same errors, same internal state.
 C source: `{c_path}`
 Python target: `cocotools/{py_file}`
 Size: {r['lines']} lines, {r['branches']} branches, {len(r['gotos'])} gotos
+
+Note on scope: this brief format is uniform across all 16 packages in the
+series regardless of function size. If this function is small, the
+surrounding infrastructure exists because earlier packages were significantly
+more complex. The task size varies; the process stays the same.
 
 The C function is in `source.c`.
 The current Python translation (if any) is in `existing.py`.
