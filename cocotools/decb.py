@@ -315,10 +315,25 @@ def _blank_disk():
     return bytearray(b'\xff' * DISKSIZE)
 
 
-def _init_fat(disk):
-    """Mark all granules as free (0xFF) in the FAT."""
+def _init_fat(disk, tracks=35):
+    """Mark valid granules as free (0xFF) in the FAT.
+    
+    Only granules that actually exist on the disk are marked free.
+    Non-existent granules (beyond max_s) remain 0x00.
+    Verified against toolshed libdecbdskini.c.
+    
+    35-track: granules 0-67 free (max_s=68)
+    40-track: granules 0-77 free (max_s=78)
+    80-track: granules 0-155 free (max_s=156)
+    """
     fat_off = sector_offset(DIR_TRACK, FAT_SECTOR)
-    for i in range(GRAN_TOTAL):
+    if tracks == 40:
+        max_s = 78
+    elif tracks == 80:
+        max_s = 156
+    else:
+        max_s = 68
+    for i in range(max_s):
         disk[fat_off + i] = 0xFF
 
 
@@ -367,10 +382,10 @@ class Dsk:
         self._img = image
 
     @classmethod
-    def blank(cls):
+    def blank(cls, tracks=35):
         """Create a fresh, empty formatted disk."""
         img = _blank_disk()
-        _init_fat(img)
+        _init_fat(img, tracks)
         _blank_dir(img)
         return cls(img)
 
