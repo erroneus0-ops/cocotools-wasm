@@ -335,6 +335,10 @@ def _init_fat(disk, tracks=35):
         max_s = 68
     for i in range(max_s):
         disk[fat_off + i] = 0xFF
+    # Non-existent granules beyond max_s must be 0x00
+    # (disk starts as 0xFF, so we must explicitly zero these)
+    for i in range(max_s, 256):
+        disk[fat_off + i] = 0x00
 
 
 def _blank_dir(disk):
