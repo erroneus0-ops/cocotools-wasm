@@ -211,6 +211,16 @@ def _insn_parse_gen_aux(as_, cl, p, elen=0):
         p.advance()
         force_size = 2
     elif p.peek() == '*':
+        # 4.24/4.25 delta check (insn_gen.c insn_parse_gen_aux): the C
+        # source's '*' branch has NO else clause -- when the character
+        # after '*' isn't a valid asxxxx-compat follow char, 4.24 left
+        # l->lint2 as genuinely uninitialized C stack garbage (undefined
+        # behavior). 4.25 fixes this by adding `else { l->lint2 = -1; }`.
+        # This Python was never affected either way: force_size is
+        # pre-initialized to -1 above, so a non-matching '*' already
+        # falls through with the same value 4.25's fix produces. No
+        # change needed here -- recorded so this isn't re-flagged as a
+        # missed fix in a future diff.
         nxt = p.s[p.pos+1] if p.pos+1 < len(p.s) else ''
         if nxt.isdigit() or nxt.isalpha() or nxt in '_@.?*+-':
             force_size = 0
@@ -758,7 +768,16 @@ def insn_parse_indexed_aux(as_, cl, p):
     if rn == 5 or (rn == 6 and curpragma(cl, PRAGMA_PCASPCR)):
         e2 = Expr.special(lwasm_expr_linelen, cl)
         e1 = Expr.oper(OPER_MINUS, e, e2)
-        e2 = Expr.oper(OPER_MINUS, e1, cl.addr)
+        # 4.25 fix (insn_indexed.c): subtract l->phase when a phase/assume
+        # setting is active for this line, falling back to l->addr when
+        # it isn't. 4.24 always subtracted l->addr unconditionally, which
+        # gave the wrong PCR offset for code inside a PHASE block (the
+        # "assumed" assembly address is what PC-relative math needs to
+        # use there, not the line's real address). cl.phase is expected
+        # to be None/falsy outside a PHASE block, exactly mirroring C's
+        # `l -> phase ? l -> phase : l -> addr` ternary.
+        base = cl.phase if getattr(cl, 'phase', None) else cl.addr
+        e2 = Expr.oper(OPER_MINUS, e1, base)
         cl.save_expr(0, e2)
         if cl.lint == 1:
             cl.pb = 0x9C if indir else 0x8C

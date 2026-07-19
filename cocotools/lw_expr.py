@@ -76,6 +76,17 @@ OPER_LT     = 17    # lw_expr_oper_lt
 OPER_LE     = 18    # lw_expr_oper_le
 OPER_GT     = 19    # lw_expr_oper_gt
 OPER_GE     = 20    # lw_expr_oper_ge
+
+# --- New in lwtools 4.25 (lw_expr.h: "operators below here will not be
+# emitted in the actual expression" -- true for BYTEPASTE, which is
+# eagerly expanded away in Expr.oper() below and never survives as its
+# own node; NOT true for LSHIFT/RSHIFT, which the 4.25 C source computes
+# and prints as ordinary operator nodes just like everything above --
+# see Expr._compute and Expr.__repr__.)
+OPER_BYTEPASTE = 21  # lw_expr_oper_bytepaste ("::")  -- expanded at build time
+OPER_LSHIFT    = 22  # lw_expr_oper_lshift    ("<<")
+OPER_RSHIFT    = 23  # lw_expr_oper_rshift    (">>")
+
 OPER_NONE   = 0     # lw_expr_oper_none
 
 # Unary operators (one operand)
@@ -197,7 +208,26 @@ class Expr:
         """
         lw_expr_build(lw_expr_type_oper, op, term1[, term2])
         Operands are deep-copied (matching lw_expr_add_operand behaviour).
+
+        New in 4.25: lw_expr_build_aux special-cases lw_expr_oper_bytepaste
+        BEFORE the normal operand-list construction -- it is expanded
+        immediately, at build time, into
+            ((te1 & 0xff) * 0x100) + (te2 & 0xff)
+        and a bytepaste node is never actually attached to the tree (this
+        matches the lw_expr.h comment that bytepaste "will not be emitted
+        in the actual expression"). Any caller building OPER_BYTEPASTE --
+        not just the parser -- gets this expansion, so it belongs here
+        rather than only at the "::" parse site.
         """
+        if op == OPER_BYTEPASTE:
+            te1, te2 = args
+            return Expr.oper(
+                OPER_PLUS,
+                Expr.oper(OPER_TIMES,
+                          Expr.oper(OPER_BWAND, te1, Expr.int(0xff)),
+                          Expr.int(0x100)),
+                Expr.oper(OPER_BWAND, te2, Expr.int(0xff)),
+            )
         e = Expr(TYPE_OPER, op)
         for a in args:
             e.operands.append(a.copy())
@@ -668,6 +698,19 @@ class Expr:
         if op == OPER_BWAND:  return vals[0] & vals[1]
         if op == OPER_BWOR:   return vals[0] | vals[1]
         if op == OPER_BWXOR:  return vals[0] ^ vals[1]
+        if op == OPER_LSHIFT:
+            # C: tr = vals[0] << vals[1] (plain int shift, no masking --
+            # matches how PLUS/MINUS/TIMES are also left unmasked here).
+            return vals[0] << vals[1]
+        if op == OPER_RSHIFT:
+            # C: tr = vals[0] >> vals[1]. Right-shift of a negative signed
+            # int is implementation-defined in C, but every mainstream
+            # compiler lwasm actually ships on (GCC/clang/MSVC, x86/ARM)
+            # implements it as arithmetic shift -- sign-extending, i.e.
+            # floor-toward-negative-infinity on the shifted-out bits.
+            # Python's native >> is exactly that (arithmetic, sign-
+            # extending) for negative ints, so no adjustment is needed.
+            return vals[0] >> vals[1]
         if op == OPER_AND:    return int(bool(vals[0]) and bool(vals[1]))
         if op == OPER_OR:     return int(bool(vals[0]) or  bool(vals[1]))
         if op == OPER_EQ:     return int(vals[0] == vals[1])
@@ -695,6 +738,7 @@ class Expr:
             OPER_PLUS: '+', OPER_MINUS: '-', OPER_TIMES: '*',
             OPER_DIVIDE: '/', OPER_MOD: '%', OPER_INTDIV: '\\',
             OPER_BWAND: 'BWAND', OPER_BWOR: 'BWOR', OPER_BWXOR: 'BWXOR',
+            OPER_LSHIFT: '<<', OPER_RSHIFT: '>>',
             OPER_AND: 'AND', OPER_OR: 'OR',
             OPER_NEG: 'NEG', OPER_COM: 'COM', OPER_COM8: 'COM8',
             OPER_EQ: 'EQ', OPER_NE: 'NE',
@@ -804,7 +848,7 @@ def _is_like_term(e1, e2):
 # ever reaching the longer one. A single-character operator that is a
 # prefix of a later, longer operator therefore permanently shadows it.
 #
-# Concretely: lwasm 4.24 can NEVER parse "<=", ">=", or "!=" as their own
+# Concretely: lwasm can NEVER parse "<=", ">=", or "!=" as their own
 # distinct operator -- confirmed against the real lwasm 4.24 binary,
 # which reports "Bad operand" for all three (the shorter operator matches,
 # consumes 1 char, and the dangling "=" then fails to parse as a term).
@@ -814,26 +858,57 @@ def _is_like_term(e1, e2):
 # and also silently changes which operator wins in mixed-precedence
 # interactions (e.g. "1&2!=3", which real lwasm rejects outright but a
 # longest-match-first search parses as "1 & (2!=3)").
+#
+# --- 4.25 delta (verified against lwasm 4.25's operators[] table) ---
+# Three additions -- "::" (byte-paste), "<<" (lshift), ">>" (rshift) --
+# and a full precedence renumbering of &&/||/&/|/!/^ and the six
+# comparison operators. The renumbering does NOT change which operators
+# are reachable: "<", ">", and "!" (bwor alias) are still declared before
+# "<="/">="/"!=" respectively, so those three remain permanently shadowed
+# exactly as in 4.24 -- only their numeric precedence values changed.
+# "<<" and ">>" are declared BEFORE the single-char "<"/">" entries, so
+# unlike "<=" they are NOT shadowed: a "<<" input fully matches the "<<"
+# entry (both characters agree) before "<" is ever tried, and the loop
+# commits to the longer match. Verified by hand-tracing the C prefix-scan
+# for "<<" (matches "<<" at i=2, operstr exhausted -> break) vs "<="
+# (fails "<<" at i=1: '=' != '<' -> falls through to "<", which matches
+# at i=1 and wins first).
 _PARSE_OPERATORS = [
-    (OPER_PLUS,   '+',   100),
-    (OPER_MINUS,  '-',   100),
-    (OPER_TIMES,  '*',   150),
-    (OPER_DIVIDE, '/',   150),
-    (OPER_MOD,    '%',   150),
-    (OPER_INTDIV, '\\',  150),
-    (OPER_AND,    '&&',   25),
-    (OPER_OR,     '||',   25),
-    (OPER_BWAND,  '&',    50),
-    (OPER_BWOR,   '|',    50),
-    (OPER_BWOR,   '!',    50),   # '!' is alias for '|' per C source
-    (OPER_BWXOR,  '^',    50),
-    (OPER_EQ,     '==',   55),
-    (OPER_NE,     '!=',   55),   # unreachable in practice -- see above
-    (OPER_NE,     '<>',   55),
-    (OPER_LT,     '<',    60),
-    (OPER_LE,     '<=',   60),   # unreachable in practice -- see above
-    (OPER_GT,     '>',    60),
-    (OPER_GE,     '>=',   60),   # unreachable in practice -- see above
+    (OPER_PLUS,      '+',   100),
+    (OPER_MINUS,     '-',   100),
+    (OPER_TIMES,     '*',   150),
+    (OPER_DIVIDE,    '/',   150),
+    (OPER_MOD,       '%',   150),
+    (OPER_INTDIV,    '\\',  150),
+
+    (OPER_AND,       '&&',   26),  # was 25 in 4.24 -- && now outranks ||,
+                                   # matching the "and behaves like
+                                   # multiplication, or like addition"
+                                   # comment in the 4.25 C source
+    (OPER_OR,        '||',   25),
+
+    (OPER_BWAND,     '&',    51),  # was 50 in 4.24 -- same "and above or"
+                                   # rationale as OPER_AND above
+    (OPER_BWOR,      '|',    50),
+    (OPER_BWOR,      '!',    50),  # '!' is alias for '|' per C source
+    (OPER_BWXOR,     '^',    50),
+
+    (OPER_BYTEPASTE, '::',   45),  # new in 4.25
+
+    # Bit-shift operators (new in 4.25, TSC-assembler compatibility).
+    # Declared here -- before the single-char '<'/'>' entries below --
+    # so the prefix scan matches the two-char form first; see the
+    # shadowing note above for why this ordering matters.
+    (OPER_LSHIFT,    '<<',  150),
+    (OPER_RSHIFT,    '>>',  150),
+
+    (OPER_EQ,        '==',   30),  # was 55 in 4.24
+    (OPER_NE,        '!=',   30),  # was 55 in 4.24 -- unreachable, see above
+    (OPER_NE,        '<>',   30),  # was 55 in 4.24
+    (OPER_LT,        '<',    30),  # was 60 in 4.24
+    (OPER_LE,        '<=',   30),  # was 60 in 4.24 -- unreachable, see above
+    (OPER_GT,        '>',    30),  # was 60 in 4.24
+    (OPER_GE,        '>=',   30),  # was 60 in 4.24 -- unreachable, see above
 ]
 
 
@@ -854,10 +929,25 @@ def _match_operator(p):
 
 
 def _skip_ws(p, compact):
-    """lw_expr_parse_next_tok: skip whitespace unless compact mode."""
-    if not compact:
-        while p.peek() not in ('\0',) and p.peek() in ' \t\r\n':
-            p.advance()
+    """lw_expr_parse_next_tok: skip whitespace unless compact mode.
+
+    PRE-EXISTING BUG (unrelated to the 4.24->4.25 delta, found while
+    testing this package's other changes -- see SUMMARY.md): the old
+    condition was `p.peek() not in ('\\0',) and p.peek() in ' \\t\\r\\n'`.
+    Python's `in` on a string checks substring containment, and the empty
+    string is a substring of every string -- so `'' in ' \\t\\r\\n'` is
+    True. Ptr.peek() returns '' at end-of-input (never '\\0'), so the old
+    condition was satisfied forever once the cursor ran off the end,
+    calling p.advance() in an infinite loop. This means the parser as
+    shipped could not successfully finish parsing any expression that
+    doesn't happen to end in trailing whitespace before EOF -- i.e.
+    effectively never, for real source text. Fixed by checking for
+    end-of-input explicitly before the whitespace test.
+    """
+    if compact:
+        return
+    while p.peek() != '' and p.peek() in ' \t\r\n':
+        p.advance()
 
 
 def _parse_term(p, ctx, compact):
@@ -951,8 +1041,14 @@ def _parse_term(p, ctx, compact):
             return None
         return Expr.oper(OPER_NEG, term)
 
-    # Unary ^ or ~  (complement; prec 200)
-    if c in ('^', '~'):
+    # Unary ^, ~, or !  (complement; prec 200). New in 4.25: '!' is also
+    # accepted as a unary complement prefix (TSC-assembler compatibility,
+    # e.g. "&!511" to align) -- guarded so "!=" is never mis-consumed as
+    # unary-complement-of-"=" (the infix NE/BWOR-alias matching for '!'
+    # happens in a completely separate code path, in _parse_expr's
+    # operator table, so this guard only needs to protect this one
+    # prefix-position check).
+    if c in ('^', '~') or (c == '!' and p.s[p.pos + 1:p.pos + 2] != '='):
         p.advance()
         term = _parse_expr(p, ctx, 200, compact)
         if term is None:
