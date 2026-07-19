@@ -681,6 +681,38 @@ BEHAVIOR_TESTS_6309 = [
     ("rtor-two-byte-opcode-adcr-6309",
      "         ORG $3F00\nTEST     ADCR  A,B\n         END\n",
      False),
+
+    # insn_emit_tfm audit (translation_packages/12): all four TFM variants,
+    # each selecting a different two-byte opcode from ops[0..3] via
+    # cl.lint (0x1138/0x1139/0x113a/0x113b), then the postbyte from cl.pb.
+    # Like ADCR above, every TFM opcode is > 0xFF, so this also re-confirms
+    # the emitop high-byte/low-byte split, but through insn_emit_tfm's own
+    # call site (l->lint as the opcode, l->pb as the postbyte) rather than
+    # the ops[0]-only path used by rtor/inh-family emit functions.
+    ("tfm-postinc-both-6309",
+     "         ORG $3F00\nTEST     TFM   D+,X+\n         END\n",
+     False),
+
+    ("tfm-postdec-both-6309",
+     "         ORG $3F00\nTEST     TFM   X-,Y-\n         END\n",
+     False),
+
+    ("tfm-r0-only-6309",
+     "         ORG $3F00\nTEST     TFM   Y+,U\n         END\n",
+     False),
+
+    ("tfm-r1-only-6309",
+     "         ORG $3F00\nTEST     TFM   S,D+\n         END\n",
+     False),
+
+    # Illegal register for TFM -- A is valid for TFR/EXG (rtor family) but
+    # NOT for TFM, which only accepts D/X/Y/U/S (insn_parse_tfm's
+    # `r0 > 4 or r1 > 4` check). Confirms insn_emit_tfm is never reached
+    # (E_REGISTER_BAD registered at parse time) and no bytes are emitted
+    # for the bad operand.
+    ("tfm-illegal-register-6309",
+     "         ORG $3F00\nTEST     TFM   A,X+\n         END\n",
+     True),
 ]
 
 
