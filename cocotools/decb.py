@@ -353,10 +353,9 @@ def _blank_dir(disk):
     off = sector_offset(DIR_TRACK, 1)
     for i in range(SECSIZE):
         disk[off + i] = 0x00
-    # Sector 17 of directory track: zeros (disk name placeholder)
-    off = sector_offset(DIR_TRACK, 17)
-    for i in range(SECSIZE):
-        disk[off + i] = 0x00
+    # Sector 17 of directory track: 0xFF when no disk name (matches toolshed)
+    # If diskName is provided it would be written here -- not yet implemented
+    # (disk is already 0xFF from _blank_disk, so nothing to do here)
 
 
 class DskError(Exception):
