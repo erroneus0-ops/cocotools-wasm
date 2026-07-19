@@ -306,8 +306,13 @@ def gran_to_track_sector(gran):
 
 
 def _blank_disk():
-    """Return a bytearray of DISKSIZE bytes, initialised to 0x00."""
-    return bytearray(DISKSIZE)
+    """Return a bytearray of DISKSIZE bytes, initialised to 0xFF.
+    
+    Real CoCo DECB formatting fills all sectors with 0xFF first,
+    then writes specific sectors (FAT, directory track header).
+    Verified against toolshed libdecbdskini.c.
+    """
+    return bytearray(b'\xff' * DISKSIZE)
 
 
 def _init_fat(disk):
@@ -318,11 +323,21 @@ def _init_fat(disk):
 
 
 def _blank_dir(disk):
-    """Fill directory sectors with 0xFF (empty entries)."""
-    for sec in range(DIR_SECTOR, DIR_SECTOR + 8):   # sectors 3-10
-        off = sector_offset(DIR_TRACK, sec)
-        for i in range(SECSIZE):
-            disk[off + i] = 0xFF
+    """Set directory track structure per toolshed libdecbdskini.c:
+    - Sector 1: all 0x00
+    - Sector 2: FAT (handled by _init_fat)
+    - Sectors 3-16: 0xFF (empty directory entries -- already set by _blank_disk)
+    - Sector 17: disk name or 0x00
+    - Sector 18: 0xFF (already set by _blank_disk)
+    """
+    # Sector 1 of directory track: all zeros
+    off = sector_offset(DIR_TRACK, 1)
+    for i in range(SECSIZE):
+        disk[off + i] = 0x00
+    # Sector 17 of directory track: zeros (disk name placeholder)
+    off = sector_offset(DIR_TRACK, 17)
+    for i in range(SECSIZE):
+        disk[off + i] = 0x00
 
 
 class DskError(Exception):
