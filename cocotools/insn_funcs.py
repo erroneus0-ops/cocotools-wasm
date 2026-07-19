@@ -1352,6 +1352,24 @@ def insn_emit_rlist(as_, cl):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def insn_parse_logicmem(as_, cl, operand):
+    # ---------------------------------------------------------------------------
+    # FUNCTION: insn_parse_logicmem
+    # SOURCE:   lwtools-4.24/lwasm/insn_logicmem.c lines 37-64
+    # AUDITED:  15 Claude, 2026-07 (translation_packages/15)
+    #
+    # Bug found and fixed: the C source calls lwasm_skip_to_next_token(l, p)
+    # twice -- once right after save_expr (before checking for ',' or ';'),
+    # and once again after advancing past the comma (before calling
+    # insn_parse_gen_aux). Both were missing from this translation. The
+    # calls are no-ops unless PRAGMA_NEWSOURCE is active (see
+    # lwasm_skip_to_next_token in lwasm.c), so the bug was silent under
+    # default parsing but broke any AIM/EIM/OIM/TIM operand with whitespace
+    # around the comma once `pragma newsource` is in effect -- confirmed
+    # against a from-source build of lwasm 4.24: `AIM #$0F , $20` under
+    # `pragma newsource` assembles cleanly in real lwasm but raised
+    # E_OPERAND_BAD here before this fix. Same bug class as the one fixed
+    # in insn_parse_bitbit (translation_packages/13).
+    # ---------------------------------------------------------------------------
     p = Ptr(operand)
     if p.peek() == '#':
         p.advance()
@@ -1359,9 +1377,11 @@ def insn_parse_logicmem(as_, cl, operand):
     if not s:
         as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
     cl.save_expr(100, s)
+    _skip_to_next_token(cl, p)
     if p.peek() not in (',', ';'):
         as_.register_error(cl, E_OPERAND_BAD); return p.remaining()
     p.advance()
+    _skip_to_next_token(cl, p)
     _insn_parse_gen_aux(as_, cl, p, 1)
     return p.remaining()
 
@@ -1370,6 +1390,44 @@ def insn_resolve_logicmem(as_, cl, force):
     _insn_resolve_gen_aux(as_, cl, force, 1)
 
 def insn_emit_logicmem(as_, cl):
+    # ---------------------------------------------------------------------------
+    # FUNCTION: insn_emit_logicmem
+    # SOURCE:   lwtools-4.24/lwasm/insn_logicmem.c lines 74-95
+    # AUDITED:  16 Claude, 2026-07 (translation_packages/16)
+    #
+    # Pre-translation checklist results:
+    #   [x] Integer width: `v & 0xFF` -- safe pattern, positive-mask AND
+    #       agrees with C on negatives in both languages.
+    #   [x] Division/modulo: the pre-filled checklist template flagged this
+    #       as "FOUND", but there is no `/` or `%` anywhere in this
+    #       function -- that entry was a stale/incorrect template default,
+    #       not an actual finding. Corrected in checklist.md.
+    #   [x] char **p: N/A (emit function).
+    #   [x] goto: none.
+    #   [x] char signedness: N/A.
+    #   [x] Argument order: N/A.
+    #   [x] Promotion: `v & 0xFF` always yields 0-255, safe as the `extra`
+    #       arg to _insn_emit_gen_aux (which treats -1 as sentinel "no
+    #       extra byte" -- v & 0xFF can never equal -1, so the extra byte
+    #       is always emitted here, matching C's unconditional call).
+    #   [x] Complement: none.
+    #   [x] lookupreg: N/A.
+    #
+    # Note: the C source has a commented-out byte-range check
+    # (`if (v < -128 || v > 255) ... E_BYTE_OVERFLOW`) that is dead code --
+    # never compiled, never executes in real lwasm 4.24. Correctly NOT
+    # reproduced here; adding it would be a behavioral deviation from the
+    # actual reference binary, not a fidelity improvement.
+    #
+    # Interaction risk: same NULL-fetch_expr risk as insn_emit_bitbit --
+    # fetch_expr(100) can return None, so the guard is `e and
+    # e.istype(TYPE_INT)`, not a bare `e.istype(...)`.
+    #
+    # Verified byte-for-byte against a from-source build of lwasm 4.24 for
+    # direct/extended/indexed(5-bit)/indexed-indirect addressing modes and
+    # the unresolved-immediate error path -- see the logicmem-* entries in
+    # BEHAVIOR_TESTS_6309 in test_fidelity.py.
+    # ---------------------------------------------------------------------------
     e = cl.fetch_expr(100)
     if not (e and e.istype(TYPE_INT)):
         as_.register_error(cl, E_IMMEDIATE_UNRESOLVED)
@@ -1625,6 +1683,38 @@ def insn_resolve_bitbit(as_, cl, force):
     pass
 
 def insn_emit_bitbit(as_, cl):
+    # ---------------------------------------------------------------------------
+    # FUNCTION: insn_emit_bitbit
+    # SOURCE:   lwtools-4.24/lwasm/insn_bitbit.c lines 101-147
+    # AUDITED:  14 Claude, 2026-07 (translation_packages/14)
+    #
+    # Pre-translation checklist results:
+    #   [x] Integer width: `v1 = lw_expr_intval(e) & 0xFFFF` -- safe pattern,
+    #       AND with a positive mask agrees with C on negatives in both
+    #       languages (renamed to `vv` here purely to avoid shadowing the
+    #       earlier bit-number `v1`; no behavioral difference from the C).
+    #   [x] Division/modulo: none.
+    #   [x] char **p: N/A (emit function, no parsing).
+    #   [x] goto: none.
+    #   [x] char signedness: N/A.
+    #   [x] Argument order: N/A.
+    #   [x] Promotion: pb = (lint<<6)|(v1<<3)|v2 stays well within int range
+    #       for all valid lint (0-2) and v1/v2 (0-7, or 0 when invalid) --
+    #       known-safe postbyte pattern, no mask needed.
+    #   [x] Complement: none.
+    #   [x] lookupreg: N/A.
+    #
+    # Interaction risk found: lwasm_fetch_expr can return NULL (id not
+    # saved). C's lw_expr_istype(NULL, ...) is null-safe and returns 0,
+    # but Python's e.istype(...) is an instance method -- calling it on
+    # None raises AttributeError where C would not have errored. Mitigation:
+    # guard every fetch_expr result with `e and e.istype(...)` rather than
+    # a bare `e.istype(...)`, at all three fetch_expr call sites (ids 0, 1, 2).
+    # Verified byte-for-byte against a from-source build of lwasm 4.24 for
+    # all six bitbit mnemonics (BAND/BEOR/BIOR/BOR/LDBT/STBT) and against
+    # all error branches (invalid bit number, byte overflow, unresolved
+    # bit-number expression) -- see BEHAVIOR_TESTS_6309 in test_fidelity.py.
+    # ---------------------------------------------------------------------------
     ops = _ops(cl)
 
     e = cl.fetch_expr(0)

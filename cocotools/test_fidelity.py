@@ -713,6 +713,91 @@ BEHAVIOR_TESTS_6309 = [
     ("tfm-illegal-register-6309",
      "         ORG $3F00\nTEST     TFM   A,X+\n         END\n",
      True),
+
+    # insn_emit_bitbit audit (translation_packages/14): CC register
+    # (lint=0), direct-page address. pb = (0<<6)|(3<<3)|5 = 0x1D.
+    # Opcode 0x1130 is > 0xFF, so this also re-confirms the two-byte
+    # opcode emit path, this time via the ops[0]-only call site (unlike
+    # insn_emit_tfm, which reaches its opcode through cl.lint instead).
+    ("bitbit-band-cc-direct-page-6309",
+     "         ORG $3F00\nTEST     BAND  CC,3,5,$10\n         END\n",
+     False),
+
+    # B register (lint=2) -> pb = (2<<6)|(2<<3)|6 = 0x96.
+    ("bitbit-stbt-b-register-6309",
+     "         ORG $3F00\nTEST     STBT  B,2,6,$20\n         END\n",
+     False),
+
+    # A register (lint=1), bit numbers at the extremes of the valid
+    # 0-7 range (0 and 7) -> pb = (1<<6)|(0<<3)|7 = 0x47.
+    ("bitbit-beor-a-register-bit-extremes-6309",
+     "         ORG $3F00\nTEST     BEOR  A,0,7,$00\n         END\n",
+     False),
+
+    # Bit number 8 is out of the valid 0-7 range -> E_BITNUMBER_INVALID.
+    # Confirms cocotools registers an error (and lwasm's CLI therefore
+    # exits non-zero / emits no output) exactly like real lwasm, rather
+    # than silently clamping v1 to 0 and emitting anyway.
+    ("bitbit-invalid-bitnumber-6309",
+     "         ORG $3F00\nTEST     BAND  CC,8,5,$10\n         END\n",
+     True),
+
+    # Address resolves outside the direct page in effect (dpval=0 by
+    # default here) -> (addr & 0xFFFF) - (dpval<<8) exceeds 0xFF ->
+    # E_BYTE_OVERFLOW. This exercises the early `return` in the C source
+    # that skips emitop/emit/emitexpr entirely once byte overflow is
+    # detected -- no partial bytes should reach the output.
+    ("bitbit-byte-overflow-6309",
+     "         ORG $3F00\nTEST     BAND  CC,3,5,$1234\n         END\n",
+     True),
+
+    # Bit-number operand is an undefined symbol -- lw_expr_istype never
+    # sees an int-typed expression for id 0, exercising the
+    # E_BITNUMBER_UNRESOLVED defensive path (the `e and e.istype(...)`
+    # guard matters here in Python: fetch_expr can return None, and
+    # None.istype(...) would raise AttributeError where C's null-safe
+    # lw_expr_istype just returns false).
+    ("bitbit-bitnumber-unresolved-6309",
+     "         ORG $3F00\nTEST     BAND  CC,UNDEF,5,$10\n         END\n",
+     True),
+
+    # insn_parse_logicmem / insn_emit_logicmem audit (translation_packages/
+    # 15 and 16): AIM/EIM/OIM/TIM ("logic op immediate mask, to memory")
+    # exercise both the mask-value parse and the general addressing mode
+    # for the memory operand.
+
+    # Direct-page mode -- opcode ops[0]=0x02 for AIM, mask $0F, addr $20.
+    ("logicmem-aim-direct-page-6309",
+     "         ORG $3F00\nTEST     AIM   #$0F,$20\n         END\n",
+     False),
+
+    # Extended mode -- address doesn't fit the direct page in effect,
+    # so the general addressing parser picks ops[2]=0x71 for OIM.
+    ("logicmem-oim-extended-6309",
+     "         ORG $3F00\nTEST     OIM   #$80,$1234\n         END\n",
+     False),
+
+    # Indexed, 5-bit offset -- ops[1]=0x65 for EIM, offset 5 fits in the
+    # 5-bit signed field so no extra offset byte is emitted.
+    ("logicmem-eim-indexed-5bit-6309",
+     "         ORG $3F00\nTEST     EIM   #$FF,5,X\n         END\n",
+     False),
+
+    # Indexed, indirect 8-bit offset -- ops[1]=0x6b for TIM; indirect
+    # addressing forces the 8/16-bit indexed form even for a small offset
+    # that would otherwise fit in 5 bits, since 5-bit offset has no
+    # indirect form.
+    ("logicmem-tim-indexed-indirect-6309",
+     "         ORG $3F00\nTEST     TIM   #$3C,[10,X]\n         END\n",
+     False),
+
+    # Unresolved mask expression (undefined symbol) -> insn_emit_logicmem's
+    # E_IMMEDIATE_UNRESOLVED path. Also exercises the same `e and
+    # e.istype(...)` null-safety guard pattern as insn_emit_bitbit, since
+    # fetch_expr(100) can return None.
+    ("logicmem-immediate-unresolved-6309",
+     "         ORG $3F00\nTEST     AIM   #UNDEF,$20\n         END\n",
+     True),
 ]
 
 
