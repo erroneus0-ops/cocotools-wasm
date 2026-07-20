@@ -544,7 +544,7 @@ Example:  BLANK.DSK,HELLO.BIN:0
     p = sub.add_parser('copy',
         help='Copy file into DECB DSK image',
         description='Copy a native file into a DECB DSK image.\n' + PATHLIST_HELP,
-        epilog='Examples:\n  toolshed.py copy HELLO.BIN BLANK.DSK,HELLO.BIN:0\n  toolshed.py copy GUESS.BAS GAMES.DSK,GUESS.BAS:0 --type 0 --ascii',
+        epilog='Examples:\n  toolshed.py copy HELLO.BIN BLANK.DSK,HELLO.BIN:0       (native file INTO disk)\n  toolshed.py copy GUESS.BAS GAMES.DSK,GUESS.BAS:0 --type 0 --ascii\n\nTo read a file back OUT of a disk, use the read command:\n  toolshed.py read BLANK.DSK,HELLO.BIN:0 HELLO.BIN',
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('src', help='Source file on your computer')
     p.add_argument('dst', help='Destination: DISK.DSK,FILENAME.EXT:0')
@@ -619,6 +619,11 @@ Example:  BLANK.DSK,HELLO.BIN:0
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('pathlist', help='Path: IMAGE.OS9,/directory')
 
+    p = sub.add_parser('version',
+        help='Show toolshed WASM version and build info',
+        description='Show the toolshed WASM build date and size.')
+    p.set_defaults(func=None)
+
     p = sub.add_parser('help',
         help='Show help for a specific command',
         description='Show detailed help for a specific command.')
@@ -676,6 +681,20 @@ Example:  BLANK.DSK,HELLO.BIN:0
 
         elif args.cmd == 'os9id':
             print(os9_id(args.pathlist), end='')
+
+        elif args.cmd == 'version':
+            import os
+            js = _TOOLSHED_JS
+            wasm = js.replace('.js', '.wasm')
+            print("cocotools_wasm/toolshed.py -- toolshed WASM wrapper")
+            if os.path.exists(wasm):
+                size = os.path.getsize(wasm)
+                mtime = os.path.getmtime(wasm)
+                import datetime
+                built = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+                print(f"toolshed.wasm: {size:,} bytes, built {built}")
+            else:
+                print("toolshed.wasm: NOT FOUND (run Build toolshed WASM workflow)")
 
         elif args.cmd == 'help':
             if hasattr(args, 'command') and args.command:
