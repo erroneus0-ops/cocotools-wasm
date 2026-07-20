@@ -42,7 +42,7 @@ def convert(srcpath, dstpath, cas=False):
 
     src_data = open(srcpath, 'rb').read()
     src_arr  = ','.join(str(b) for b in src_data)
-    fn_name  = 'makewav_run_cas' if cas else 'makewav_run'
+    fn_name  = 'makewav_run_cas' if cas else 'makewav_run_raw'
     vfs_ext  = '.cas' if cas else '.wav'
 
     with tempfile.TemporaryDirectory() as tmp:
