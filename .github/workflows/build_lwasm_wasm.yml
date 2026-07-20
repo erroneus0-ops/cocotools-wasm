@@ -14,6 +14,9 @@ on:
       - 'wasm/lwasm/**'
       - '.github/workflows/build_lwasm_wasm.yml'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
