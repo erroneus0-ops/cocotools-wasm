@@ -683,18 +683,22 @@ Example:  BLANK.DSK,HELLO.BIN:0
             print(os9_id(args.pathlist), end='')
 
         elif args.cmd == 'version':
-            import os
+            import os, glob, datetime
             js = _TOOLSHED_JS
             wasm = js.replace('.js', '.wasm')
             print("cocotools_wasm/toolshed.py -- toolshed WASM wrapper")
+
+            # Detect toolshed version from source directory name
+            dirs = sorted(glob.glob(os.path.join(_REPO_ROOT, 'toolshed-*')))
+            ts_version = os.path.basename(dirs[-1]).replace('toolshed-', '') if dirs else 'unknown'
+
             if os.path.exists(wasm):
-                size = os.path.getsize(wasm)
                 mtime = os.path.getmtime(wasm)
-                import datetime
-                built = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
-                print(f"toolshed.wasm: {size:,} bytes, built {built}")
+                built = datetime.datetime.fromtimestamp(mtime).strftime('%d%b%Y').upper()
+                print(f"toolshed.wasm: built {built} based on toolshed v{ts_version}")
             else:
-                print("toolshed.wasm: NOT FOUND (run Build toolshed WASM workflow)")
+                print(f"toolshed.wasm: NOT FOUND (based on toolshed v{ts_version})")
+                print("  Run 'Build toolshed WASM' GitHub Actions workflow to build.")
 
         elif args.cmd == 'help':
             if hasattr(args, 'command') and args.command:
