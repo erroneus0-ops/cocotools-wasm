@@ -1,10 +1,12 @@
 """
 cocotools_wasm/makewav.py -- Python wrapper around makewav.wasm
 
-Converts CoCo binary files to cassette WAV files for loading via tape.
+Converts CoCo binary files to cassette WAV or CAS files for loading via tape.
+XRoar accepts both WAV (audio) and CAS (digital) cassette formats.
 
 CLI:
     python cocotools_wasm/makewav.py convert HELLO.BIN HELLO.WAV
+    python cocotools_wasm/makewav.py convert HELLO.BIN HELLO.CAS --cas
     python cocotools_wasm/makewav.py version
     python cocotools_wasm/makewav.py --help
 """
@@ -20,13 +22,14 @@ _WASM_DIR   = os.path.join(_REPO_ROOT, 'wasm', 'makewav')
 _MAKEWAV_JS = os.path.join(_WASM_DIR, 'makewav.js')
 
 
-def convert(srcpath, dstpath):
+def convert(srcpath, dstpath, cas=False):
     """
-    Convert a CoCo binary to a cassette WAV file.
+    Convert a CoCo binary to a cassette WAV or CAS file.
 
     Args:
         srcpath: input binary file
-        dstpath: output WAV file
+        dstpath: output WAV or CAS file
+        cas:     if True, output CAS format instead of WAV
 
     Returns:
         0 on success
@@ -39,11 +42,13 @@ def convert(srcpath, dstpath):
 
     src_data = open(srcpath, 'rb').read()
     src_arr  = ','.join(str(b) for b in src_data)
+    fn_name  = 'makewav_run_cas' if cas else 'makewav_run'
+    vfs_ext  = '.cas' if cas else '.wav'
 
     with tempfile.TemporaryDirectory() as tmp:
         vfs_src  = '/in.bin'
-        vfs_dst  = '/out.wav'
-        out_path = os.path.join(tmp, 'out.wav')
+        vfs_dst  = f'/out{vfs_ext}'
+        out_path = os.path.join(tmp, f'out{vfs_ext}')
         rc_path  = os.path.join(tmp, 'rc.txt')
         js = _MAKEWAV_JS
 
@@ -52,7 +57,7 @@ const MakewavModule = require({js!r});
 const fs = require('fs');
 MakewavModule().then(m => {{
     m.FS.writeFile({vfs_src!r}, new Uint8Array([{src_arr}]));
-    const fn = m.cwrap('makewav_run', 'number', ['string', 'string']);
+    const fn = m.cwrap({fn_name!r}, 'number', ['string', 'string']);
     let rc;
     try {{ rc = fn({vfs_src!r}, {vfs_dst!r}); }}
     catch(e) {{ rc = e.name === 'ExitStatus' ? e.status : 2; }}
@@ -96,15 +101,18 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(
         prog='makewav.py',
-        description='Convert CoCo binary files to cassette WAV files'
+        description='Convert CoCo binary files to cassette WAV or CAS files'
     )
     sub = parser.add_subparsers(dest='cmd', required=True)
 
-    p = sub.add_parser('convert', help='Convert binary to WAV',
-        epilog='Example:\n  makewav.py convert HELLO.BIN HELLO.WAV',
+    p = sub.add_parser('convert', help='Convert binary to cassette file',
+        description='Convert a CoCo binary to WAV (audio) or CAS (digital) cassette format.\nXRoar accepts both formats as virtual cassette input.',
+        epilog='Examples:\n  makewav.py convert HELLO.BIN HELLO.WAV\n  makewav.py convert HELLO.BIN HELLO.CAS --cas',
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('src', help='Input binary file')
-    p.add_argument('dst', help='Output WAV file')
+    p.add_argument('dst', help='Output WAV or CAS file')
+    p.add_argument('--cas', action='store_true',
+                   help='Output CAS format instead of WAV (smaller, XRoar compatible)')
 
     p = sub.add_parser('version', help='Show version')
     p = sub.add_parser('help', help='Show help for a command')
@@ -114,10 +122,11 @@ if __name__ == '__main__':
 
     try:
         if args.cmd == 'convert':
-            rc = convert(args.src, args.dst)
+            rc = convert(args.src, args.dst, cas=args.cas)
             if rc == 0:
                 size = os.path.getsize(args.dst)
-                print(f"OK: {args.src} -> {args.dst} ({size:,} bytes)")
+                fmt = 'CAS' if args.cas else 'WAV'
+                print(f"OK: {args.src} -> {args.dst} ({fmt}, {size:,} bytes)")
             else:
                 print(f"ERROR: rc={rc}", file=sys.stderr)
                 sys.exit(1)
@@ -131,6 +140,7 @@ if __name__ == '__main__':
                 built = datetime.datetime.fromtimestamp(mtime).strftime('%d%b%Y').upper()
                 print(f"cocotools_wasm/makewav.py -- makewav WASM wrapper")
                 print(f"makewav.wasm: built {built} based on {ver}")
+                print(f"Formats: WAV (audio), CAS (digital, --cas flag)")
 
         elif args.cmd == 'help':
             if hasattr(args, 'command') and args.command:
