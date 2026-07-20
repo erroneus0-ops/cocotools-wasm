@@ -1,0 +1,36 @@
+name: Build tocgen WASM
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'wasm/tocgen/**'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+      - name: Build
+        run: |
+          cd wasm/tocgen
+          bash build.sh
+      - name: Write build report
+        if: always()
+        run: |
+          echo "# tocgen WASM Build Report" > wasm/tocgen/BUILD_REPORT.md
+          echo "**Built:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> wasm/tocgen/BUILD_REPORT.md
+          echo "**Size:** $(wc -c < wasm/tocgen/tocgen.wasm 2>/dev/null || echo 'build failed') bytes" >> wasm/tocgen/BUILD_REPORT.md
+      - name: Commit
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add wasm/tocgen/
+          git diff --staged --quiet || git commit -m "build: tocgen WASM [ci skip]"
+          git push
