@@ -522,45 +522,125 @@ if __name__ == '__main__':
     )
     sub = parser.add_subparsers(dest='cmd', required=True)
 
-    p = sub.add_parser('dskini', help='Create blank DECB DSK image')
+    # Pathlist format explanation (used in multiple help strings)
+    PATHLIST_HELP = """
+Pathlist format:  DISKIMAGE.DSK,FILENAME.EXT:0
+  DISKIMAGE.DSK   -- the disk image file on your computer
+  FILENAME.EXT    -- the file name as it appears on the CoCo disk
+  :0              -- drive number (always 0 for single-drive images)
+
+Example:  BLANK.DSK,HELLO.BIN:0
+"""
+
+    p = sub.add_parser('dskini',
+        help='Create blank DECB DSK image',
+        description='Create a blank formatted DECB DSK image.',
+        epilog='Example:
+  toolshed.py dskini BLANK.DSK
+  toolshed.py dskini BLANK80.DSK --tracks 80',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('disk', help='Output DSK file')
-    p.add_argument('--tracks', type=int, choices=[35,40,80], default=35)
+    p.add_argument('--tracks', type=int, choices=[35,40,80], default=35,
+                   help='Number of tracks (default: 35)')
 
-    p = sub.add_parser('copy', help='Copy file into DECB DSK image')
-    p.add_argument('src', help='Source file')
-    p.add_argument('dst', help='Destination pathlist (disk.dsk,FILE.BIN:0)')
+    p = sub.add_parser('copy',
+        help='Copy file into DECB DSK image',
+        description='Copy a native file into a DECB DSK image.
+' + PATHLIST_HELP,
+        epilog='Examples:
+  toolshed.py copy HELLO.BIN BLANK.DSK,HELLO.BIN:0
+  toolshed.py copy GUESS.BAS GAMES.DSK,GUESS.BAS:0 --type 0 --ascii',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('src', help='Source file on your computer')
+    p.add_argument('dst', help='Destination: DISK.DSK,FILENAME.EXT:0')
     p.add_argument('--type', type=int, choices=[0,1,2,3], default=2,
-                   dest='file_type', help='File type (0=BASIC,1=data,2=ML,3=text)')
-    p.add_argument('--ascii', action='store_true', help='ASCII data type')
+                   dest='file_type',
+                   help='File type: 0=BASIC program, 1=BASIC data, 2=ML program (default), 3=text')
+    p.add_argument('--ascii', action='store_true',
+                   help='Mark as ASCII data type (default: binary)')
 
-    p = sub.add_parser('read', help='Read file from DECB DSK image')
-    p.add_argument('src', help='Source pathlist (disk.dsk,FILE.BIN:0)')
-    p.add_argument('dst', help='Destination file')
+    p = sub.add_parser('read',
+        help='Read file from DECB DSK image',
+        description='Read a file from a DECB DSK image to your computer.
+' + PATHLIST_HELP,
+        epilog='Example:
+  toolshed.py read BLANK.DSK,HELLO.BIN:0 HELLO.BIN',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('src', help='Source: DISK.DSK,FILENAME.EXT:0')
+    p.add_argument('dst', help='Destination file on your computer')
 
-    p = sub.add_parser('dir', help='List DECB DSK directory')
+    p = sub.add_parser('dir',
+        help='List DECB DSK directory',
+        description='List the directory of a DECB DSK image.',
+        epilog='Example:
+  toolshed.py dir BLANK.DSK',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('disk', help='DSK file')
 
-    p = sub.add_parser('kill', help='Delete file from DECB DSK image')
-    p.add_argument('pathlist', help='File pathlist (disk.dsk,FILE.BIN:0)')
+    p = sub.add_parser('kill',
+        help='Delete file from DECB DSK image',
+        description='Delete a file from a DECB DSK image.
+' + PATHLIST_HELP,
+        epilog='Example:
+  toolshed.py kill BLANK.DSK,HELLO.BIN:0',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('pathlist', help='File to delete: DISK.DSK,FILENAME.EXT:0')
 
-    p = sub.add_parser('free', help='Show free space on DECB DSK image')
+    p = sub.add_parser('free',
+        help='Show free space on DECB DSK image',
+        description='Show free granule and byte count for a DECB DSK image.',
+        epilog='Example:
+  toolshed.py free BLANK.DSK',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('disk', help='DSK file')
 
-    p = sub.add_parser('rename', help='Rename file in DECB DSK image')
-    p.add_argument('pathlist', help='File pathlist (disk.dsk,FILE.BIN:0)')
-    p.add_argument('newname', help='New filename')
+    p = sub.add_parser('rename',
+        help='Rename file in DECB DSK image',
+        description='Rename a file in a DECB DSK image.
+' + PATHLIST_HELP,
+        epilog='Example:
+  toolshed.py rename BLANK.DSK,HELLO.BIN:0 WORLD.BIN',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('pathlist', help='File to rename: DISK.DSK,FILENAME.EXT:0')
+    p.add_argument('newname', help='New filename (without disk path)')
 
-    p = sub.add_parser('fstat', help='Show file info from DECB DSK image')
-    p.add_argument('pathlist', help='File pathlist (disk.dsk,FILE.BIN:0)')
+    p = sub.add_parser('fstat',
+        help='Show file info from DECB DSK image',
+        description='Show file type, data type, and size for a file on a DECB DSK image.
+' + PATHLIST_HELP,
+        epilog='Example:
+  toolshed.py fstat BLANK.DSK,HELLO.BIN:0',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('pathlist', help='File to inspect: DISK.DSK,FILENAME.EXT:0')
 
-    p = sub.add_parser('os9dir', help='List OS-9 image directory')
-    p.add_argument('pathlist', help='Path (image.os9,/DD)')
+    p = sub.add_parser('os9dir',
+        help='List OS-9 image directory',
+        description='List a directory inside an OS-9 disk image.',
+        epilog='Example:
+  toolshed.py os9dir NITROS9.OS9,/DD',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('pathlist', help='Path: IMAGE.OS9,/directory')
 
-    p = sub.add_parser('os9free', help='Show OS-9 image free space')
-    p.add_argument('pathlist', help='Path (image.os9,/DD)')
+    p = sub.add_parser('os9free',
+        help='Show OS-9 image free space',
+        description='Show free space on an OS-9 disk image.',
+        epilog='Example:
+  toolshed.py os9free NITROS9.OS9,/DD',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('pathlist', help='Path: IMAGE.OS9,/directory')
 
-    p = sub.add_parser('os9id', help='Show OS-9 image identification')
-    p.add_argument('pathlist', help='Path (image.os9,/DD)')
+    p = sub.add_parser('os9id',
+        help='Show OS-9 image identification',
+        description='Show the OS-9 disk image identification block.',
+        epilog='Example:
+  toolshed.py os9id NITROS9.OS9,/DD',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('pathlist', help='Path: IMAGE.OS9,/directory')
+
+    p = sub.add_parser('help',
+        help='Show help for a specific command',
+        description='Show detailed help for a specific command.')
+    p.add_argument('command', nargs='?', help='Command to get help for')
 
     args = parser.parse_args()
 
@@ -615,6 +695,16 @@ if __name__ == '__main__':
         elif args.cmd == 'os9id':
             print(os9_id(args.pathlist), end='')
 
+        elif args.cmd == 'help':
+            if hasattr(args, 'command') and args.command:
+                # Show help for specific command
+                sys.argv = [sys.argv[0], args.command, '--help']
+                parser.parse_args()
+            else:
+                parser.print_help()
+
+    except SystemExit:
+        raise
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
