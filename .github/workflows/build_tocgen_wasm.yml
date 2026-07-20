@@ -33,4 +33,5 @@ jobs:
           git config user.email "actions@github.com"
           git add wasm/tocgen/
           git diff --staged --quiet || git commit -m "build: tocgen WASM [ci skip]"
+          git pull --rebase origin main
           git push

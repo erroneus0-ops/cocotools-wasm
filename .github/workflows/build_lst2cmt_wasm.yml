@@ -33,4 +33,5 @@ jobs:
           git config user.email "actions@github.com"
           git add wasm/lst2cmt/
           git diff --staged --quiet || git commit -m "build: lst2cmt WASM [ci skip]"
+          git pull --rebase origin main
           git push

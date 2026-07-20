@@ -69,4 +69,5 @@ jobs:
           git config user.email "actions@github.com"
           git add wasm/toolshed/toolshed.js wasm/toolshed/toolshed.wasm wasm/toolshed/BUILD_REPORT.md
           git diff --staged --quiet || git commit -m "build: toolshed ${{ github.event.inputs.version || '2.5.1' }} WASM [ci skip]"
+          git pull --rebase origin main
           git push
