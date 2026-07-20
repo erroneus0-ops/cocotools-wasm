@@ -22,14 +22,16 @@ _WASM_DIR   = os.path.join(_REPO_ROOT, 'wasm', 'makewav')
 _MAKEWAV_JS = os.path.join(_WASM_DIR, 'makewav.js')
 
 
-def convert(srcpath, dstpath, cas=False):
+def convert(srcpath, dstpath, cas=False, raw=True, decb=False):
     """
-    Convert a CoCo binary to a cassette WAV or CAS file.
+    Convert a file to a cassette WAV or CAS file.
 
     Args:
-        srcpath: input binary file
+        srcpath: input file
         dstpath: output WAV or CAS file
-        cas:     if True, output CAS format instead of WAV
+        cas:     if True, output CAS format (-k flag)
+        raw:     if True, treat input as raw binary (-r flag)
+        decb:    if True, input has DECB header (-c flag)
 
     Returns:
         0 on success
@@ -42,7 +44,7 @@ def convert(srcpath, dstpath, cas=False):
 
     src_data = open(srcpath, 'rb').read()
     src_arr  = ','.join(str(b) for b in src_data)
-    fn_name  = 'makewav_run_cas' if cas else 'makewav_run_raw'
+    fn_name  = 'makewav_run_cas' if cas else 'makewav_run_raw'  # raw is default
     vfs_ext  = '.cas' if cas else '.wav'
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -101,37 +103,30 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(
         prog='makewav.py',
-        description='Convert CoCo binary files to cassette WAV or CAS files'
+        description='makewav -- S-record/binary to CoCo cassette WAV/CAS file',
+        epilog='Examples:\n'
+               '  makewav.py -r -o HELLO.WAV HELLO.BIN          (raw binary to WAV)\n'
+               '  makewav.py -r -k -o HELLO.CAS HELLO.BIN       (raw binary to CAS)\n'
+               '  makewav.py -c -r -o HELLO.WAV HELLO.BIN       (DECB binary to WAV)\n'
+               '  makewav.py version                             (show version)',
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    sub = parser.add_subparsers(dest='cmd', required=True)
-
-    p = sub.add_parser('convert', help='Convert binary to cassette file',
-        description='Convert a CoCo binary to WAV (audio) or CAS (digital) cassette format.\nXRoar accepts both formats as virtual cassette input.',
-        epilog='Examples:\n  makewav.py convert HELLO.BIN HELLO.WAV\n  makewav.py convert HELLO.BIN HELLO.CAS --cas',
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('src', help='Input binary file')
-    p.add_argument('dst', help='Output WAV or CAS file')
-    p.add_argument('--cas', action='store_true',
-                   help='Output CAS format instead of WAV (smaller, XRoar compatible)')
-
-    p = sub.add_parser('version', help='Show version')
-    p = sub.add_parser('help', help='Show help for a command')
-    p.add_argument('command', nargs='?')
+    parser.add_argument('input', nargs='?', help='Input file (S-record or binary)')
+    parser.add_argument('-r', action='store_true', dest='raw',
+                        help='Treat input as raw binary (not S-record)')
+    parser.add_argument('-c', action='store_true', dest='decb',
+                        help='Input file has DECB header')
+    parser.add_argument('-k', action='store_true', dest='cas',
+                        help='Output CAS format instead of WAV')
+    parser.add_argument('-o', dest='output', metavar='FILE',
+                        help='Output filename (default: file.wav or file.cas)')
+    parser.add_argument('version', nargs='?', help=argparse.SUPPRESS)
 
     args = parser.parse_args()
 
     try:
-        if args.cmd == 'convert':
-            rc = convert(args.src, args.dst, cas=args.cas)
-            if rc == 0:
-                size = os.path.getsize(args.dst)
-                fmt = 'CAS' if args.cas else 'WAV'
-                print(f"OK: {args.src} -> {args.dst} ({fmt}, {size:,} bytes)")
-            else:
-                print(f"ERROR: rc={rc}", file=sys.stderr)
-                sys.exit(1)
-
-        elif args.cmd == 'version':
+        # Handle version subcommand
+        if args.input == 'version' or args.version == 'version':
             if not os.path.exists(_MAKEWAV_JS):
                 print("makewav.wasm: NOT FOUND")
             else:
@@ -140,14 +135,26 @@ if __name__ == '__main__':
                 built = datetime.datetime.fromtimestamp(mtime).strftime('%d%b%Y').upper()
                 print(f"cocotools_wasm/makewav.py -- makewav WASM wrapper")
                 print(f"makewav.wasm: built {built} based on {ver}")
-                print(f"Formats: WAV (audio), CAS (digital, --cas flag)")
+            sys.exit(0)
 
-        elif args.cmd == 'help':
-            if hasattr(args, 'command') and args.command:
-                sys.argv = [sys.argv[0], args.command, '--help']
-                parser.parse_args()
-            else:
-                parser.print_help()
+        if not args.input:
+            parser.print_help()
+            sys.exit(0)
+
+        # Determine output filename
+        dst = args.output
+        if not dst:
+            base = os.path.splitext(args.input)[0]
+            dst = base + ('.cas' if args.cas else '.wav')
+
+        rc = convert(args.input, dst, cas=args.cas)
+        if rc == 0:
+            size = os.path.getsize(dst)
+            fmt = 'CAS' if args.cas else 'WAV'
+            print(f"OK: {args.input} -> {dst} ({fmt}, {size:,} bytes)")
+        else:
+            print(f"ERROR: rc={rc}", file=sys.stderr)
+            sys.exit(1)
 
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
