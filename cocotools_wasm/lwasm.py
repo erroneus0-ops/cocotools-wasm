@@ -177,3 +177,32 @@ def assemble(source: str, format: str = 'decb') -> AssemblyResult:
             warnings = warnings,
             rc       = rc,
         )
+
+
+if __name__ == '__main__':
+    import sys
+    print("Testing lwasm WASM wrapper...")
+    
+    source = "         ORG  $3F00\nSTART    LDA  #$42\n         STA  $0400\n         END  START\n"
+    
+    try:
+        result = assemble(source, format='decb')
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
+    
+    print(f"Success:  {result.success}")
+    print(f"RC:       {result.rc}")
+    print(f"Binary:   {len(result.binary)} bytes -- {result.binary.hex().upper()}")
+    print(f"Errors:   {len(result.errors)}")
+    print(f"Warnings: {len(result.warnings)}")
+    
+    if result.errors:
+        for e in result.errors:
+            print(f"  ERROR {e.file}:{e.line}: {e.message}")
+    
+    if result.success:
+        print("PASS")
+    else:
+        print("FAIL")
+        sys.exit(1)
