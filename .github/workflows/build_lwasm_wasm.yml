@@ -37,6 +37,10 @@ jobs:
         run: |
           cd wasm/lwasm
           bash build.sh
+          # Write version file
+          LWTOOLS=$(find ../.. -maxdepth 1 -type d -name "lwtools-*" | sort -V | tail -1 | xargs basename)
+          echo "source: $LWTOOLS" > VERSION
+          echo "built: $(date -u '+%d%b%Y').upper()" >> VERSION
 
       - name: Verify output
         run: |

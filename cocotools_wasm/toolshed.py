@@ -688,16 +688,28 @@ Example:  BLANK.DSK,HELLO.BIN:0
             wasm = js.replace('.js', '.wasm')
             print("cocotools_wasm/toolshed.py -- toolshed WASM wrapper")
 
-            # Detect toolshed version from source directory name
-            dirs = sorted(glob.glob(os.path.join(_REPO_ROOT, 'toolshed-*')))
-            ts_version = os.path.basename(dirs[-1]).replace('toolshed-', '') if dirs else 'unknown'
+            # Read version from VERSION file (written at build time)
+            # Fall back to directory detection for development environments
+            version_file = os.path.join(_WASM_DIR, 'VERSION')
+            source = 'unknown'
+            built = 'unknown'
+            if os.path.exists(version_file):
+                for line in open(version_file):
+                    if line.startswith('source:'):
+                        source = line.split(':', 1)[1].strip().replace('toolshed-', '')
+                    elif line.startswith('built:'):
+                        built = line.split(':', 1)[1].strip().upper()
+            else:
+                dirs = sorted(glob.glob(os.path.join(_REPO_ROOT, 'toolshed-*')))
+                source = os.path.basename(dirs[-1]).replace('toolshed-', '') if dirs else 'unknown'
+                if os.path.exists(wasm):
+                    mtime = os.path.getmtime(wasm)
+                    built = datetime.datetime.fromtimestamp(mtime).strftime('%d%b%Y').upper()
 
             if os.path.exists(wasm):
-                mtime = os.path.getmtime(wasm)
-                built = datetime.datetime.fromtimestamp(mtime).strftime('%d%b%Y').upper()
-                print(f"toolshed.wasm: built {built} based on toolshed v{ts_version}")
+                print(f"toolshed.wasm: built {built} based on toolshed v{source}")
             else:
-                print(f"toolshed.wasm: NOT FOUND (based on toolshed v{ts_version})")
+                print(f"toolshed.wasm: NOT FOUND (based on toolshed v{source})")
                 print("  Run 'Build toolshed WASM' GitHub Actions workflow to build.")
 
         elif args.cmd == 'help':

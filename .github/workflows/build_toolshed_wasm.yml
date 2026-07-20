@@ -35,6 +35,10 @@ jobs:
         run: |
           cd wasm/toolshed
           bash build.sh
+          # Write version file
+          TOOLSHED=$(find ../.. -maxdepth 1 -type d -name "toolshed-*" | sort -V | tail -1 | xargs basename)
+          echo "source: $TOOLSHED" > VERSION
+          echo "built: $(date -u '+%d%b%Y')" >> VERSION
 
       - name: Verify output
         run: |
