@@ -180,29 +180,52 @@ def assemble(source: str, format: str = 'decb') -> AssemblyResult:
 
 
 if __name__ == '__main__':
-    import sys
-    print("Testing lwasm WASM wrapper...")
-    
-    source = "         ORG  $3F00\nSTART    LDA  #$42\n         STA  $0400\n         END  START\n"
-    
-    try:
+    import argparse, sys
+
+    parser = argparse.ArgumentParser(
+        prog='lwasm.py',
+        description='Assemble 6809 source using lwasm WASM'
+    )
+    parser.add_argument('source', nargs='?', help='Assembly source file (.asm)')
+    parser.add_argument('-o', '--output', help='Output binary file (default: source.bin)')
+    parser.add_argument('--format', choices=['decb', 'raw', 'os9'], default='decb',
+                        help='Output format (default: decb)')
+    parser.add_argument('--test', action='store_true',
+                        help='Run internal smoke test')
+    args = parser.parse_args()
+
+    if args.test:
+        # Internal smoke test
+        source = "         ORG  $3F00\nSTART    LDA  #$42\n         STA  $0400\n         END  START\n"
+        print("Smoke test...")
         result = assemble(source, format='decb')
-    except FileNotFoundError as e:
-        print(f"ERROR: {e}")
-        sys.exit(1)
-    
-    print(f"Success:  {result.success}")
-    print(f"RC:       {result.rc}")
-    print(f"Binary:   {len(result.binary)} bytes -- {result.binary.hex().upper()}")
-    print(f"Errors:   {len(result.errors)}")
-    print(f"Warnings: {len(result.warnings)}")
-    
-    if result.errors:
+        print(f"  RC={result.rc} binary={len(result.binary)}b errors={len(result.errors)}")
+        if result.success:
+            print("  PASS")
+        else:
+            for e in result.errors:
+                print(f"  ERROR {e.file}:{e.line}: {e.message}")
+            sys.exit(1)
+
+    elif args.source:
+        import os
+        if not os.path.exists(args.source):
+            print(f"ERROR: {args.source}: file not found", file=sys.stderr)
+            sys.exit(1)
+        source = open(args.source).read()
+        result = assemble(source, format=args.format)
+
+        for w in result.warnings:
+            print(f"WARNING {w.file}:{w.line}: {w.message}")
         for e in result.errors:
-            print(f"  ERROR {e.file}:{e.line}: {e.message}")
-    
-    if result.success:
-        print("PASS")
+            print(f"ERROR {e.file}:{e.line}: {e.message}", file=sys.stderr)
+
+        if not result.success:
+            sys.exit(1)
+
+        out = args.output or os.path.splitext(args.source)[0] + '.bin'
+        open(out, 'wb').write(result.binary)
+        print(f"{len(result.binary)} bytes -> {out}")
+
     else:
-        print("FAIL")
-        sys.exit(1)
+        parser.print_help()
