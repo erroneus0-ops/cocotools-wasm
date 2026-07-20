@@ -1,0 +1,55 @@
+name: Build lwasm WASM
+
+# Trigger manually from GitHub Actions tab
+# or automatically when lwasm source files change
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'lwtools version (e.g. 4.24 or 4.25)'
+        required: false
+        default: '4.24'
+  push:
+    paths:
+      - 'wasm/lwasm/**'
+      - '.github/workflows/build_lwasm_wasm.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+
+      - name: Verify emcc
+        run: emcc --version
+
+      - name: Build lwasm WASM
+        run: |
+          cd wasm/lwasm
+          bash build.sh
+
+      - name: Verify output
+        run: |
+          ls -la wasm/lwasm/lwasm.js wasm/lwasm/lwasm.wasm
+          # Basic sanity check -- file should be non-empty
+          test -s wasm/lwasm/lwasm.wasm && echo "lwasm.wasm OK"
+          test -s wasm/lwasm/lwasm.js   && echo "lwasm.js OK"
+
+      - name: Run smoke test
+        run: |
+          node wasm/lwasm/smoke_test.js
+
+      - name: Commit WASM output
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add wasm/lwasm/lwasm.js wasm/lwasm/lwasm.wasm
+          git diff --staged --quiet || git commit -m "build: lwasm ${{ github.event.inputs.version || '4.24' }} WASM [ci skip]"
+          git push
