@@ -47,12 +47,26 @@ jobs:
 
       - name: Run smoke test
         run: |
-          node wasm/lwasm/smoke_test.js
+          node wasm/lwasm/smoke_test.js 2>&1 | tee /tmp/smoke_output.txt
+
+      - name: Write build report
+        if: always()
+        run: |
+          echo "# lwasm WASM Build Report" > wasm/lwasm/BUILD_REPORT.md
+          echo "" >> wasm/lwasm/BUILD_REPORT.md
+          echo "**Built:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> wasm/lwasm/BUILD_REPORT.md
+          echo "**lwtools:** $(ls -d lwtools-* | sort -V | tail -1)" >> wasm/lwasm/BUILD_REPORT.md
+          echo "**WASM size:** $(wc -c < wasm/lwasm/lwasm.wasm 2>/dev/null || echo 'build failed') bytes" >> wasm/lwasm/BUILD_REPORT.md
+          echo "" >> wasm/lwasm/BUILD_REPORT.md
+          echo "## Smoke Test Output" >> wasm/lwasm/BUILD_REPORT.md
+          echo '```' >> wasm/lwasm/BUILD_REPORT.md
+          cat /tmp/smoke_output.txt >> wasm/lwasm/BUILD_REPORT.md 2>/dev/null || echo "smoke test did not run" >> wasm/lwasm/BUILD_REPORT.md
+          echo '```' >> wasm/lwasm/BUILD_REPORT.md
 
       - name: Commit WASM output
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add wasm/lwasm/lwasm.js wasm/lwasm/lwasm.wasm
+          git add wasm/lwasm/lwasm.js wasm/lwasm/lwasm.wasm wasm/lwasm/BUILD_REPORT.md
           git diff --staged --quiet || git commit -m "build: lwasm ${{ github.event.inputs.version || '4.24' }} WASM [ci skip]"
           git push

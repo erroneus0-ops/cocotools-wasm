@@ -43,12 +43,26 @@ jobs:
 
       - name: Run smoke test
         run: |
-          node wasm/toolshed/smoke_test.js
+          node wasm/toolshed/smoke_test.js 2>&1 | tee /tmp/smoke_output.txt
+
+      - name: Write build report
+        if: always()
+        run: |
+          echo "# toolshed WASM Build Report" > wasm/toolshed/BUILD_REPORT.md
+          echo "" >> wasm/toolshed/BUILD_REPORT.md
+          echo "**Built:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> wasm/toolshed/BUILD_REPORT.md
+          echo "**Toolshed:** $(ls -d toolshed-* | sort -V | tail -1)" >> wasm/toolshed/BUILD_REPORT.md
+          echo "**WASM size:** $(wc -c < wasm/toolshed/toolshed.wasm 2>/dev/null || echo 'build failed') bytes" >> wasm/toolshed/BUILD_REPORT.md
+          echo "" >> wasm/toolshed/BUILD_REPORT.md
+          echo "## Smoke Test Output" >> wasm/toolshed/BUILD_REPORT.md
+          echo '```' >> wasm/toolshed/BUILD_REPORT.md
+          cat /tmp/smoke_output.txt >> wasm/toolshed/BUILD_REPORT.md 2>/dev/null || echo "smoke test did not run" >> wasm/toolshed/BUILD_REPORT.md
+          echo '```' >> wasm/toolshed/BUILD_REPORT.md
 
       - name: Commit WASM output
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add wasm/toolshed/toolshed.js wasm/toolshed/toolshed.wasm
+          git add wasm/toolshed/toolshed.js wasm/toolshed/toolshed.wasm wasm/toolshed/BUILD_REPORT.md
           git diff --staged --quiet || git commit -m "build: toolshed ${{ github.event.inputs.version || '2.5.1' }} WASM [ci skip]"
           git push
