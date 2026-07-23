@@ -547,7 +547,8 @@ def cecb_copy(srcpath, dstpathlist, file_type=2, load_addr='', exec_addr=''):
 
     Args:
         srcpath:     source binary file
-        dstpathlist: destination CAS pathlist (e.g. /disk.cas,HELLO:0)
+        dstpathlist: destination CAS pathlist (e.g. DISK.CAS,HELLO)
+                     Note: CECB format uses no drive number (:0)
         file_type:   0=BASIC, 1=data, 2=ML (default), 3=text
         load_addr:   load address as hex string (e.g. '3F00')
         exec_addr:   exec address as hex string (e.g. '3F00')
@@ -556,6 +557,8 @@ def cecb_copy(srcpath, dstpathlist, file_type=2, load_addr='', exec_addr=''):
     src_arr  = ','.join(str(b) for b in src_data)
     comma = dstpathlist.index(',')
     cas_path = dstpathlist[:comma]
+    # Strip :0 drive suffix if present (CECB doesn't use drive numbers)
+    dstpathlist = dstpathlist.split(':')[0]
     cas_data = open(cas_path, 'rb').read() if os.path.exists(cas_path) else b''
     cas_arr  = ','.join(str(b) for b in cas_data)
 
@@ -717,10 +720,10 @@ Example:  BLANK.DSK,HELLO.BIN:0
     p = sub.add_parser('cecbcopy',
         help='Copy binary into CAS image',
         description='Copy a binary file into a CAS cassette image.\n\nPathlist format: CASSETTE.CAS,FILENAME:0',
-        epilog='Examples:\n  toolshed.py cecbcopy HELLO.BIN BLANK.CAS,HELLO:0 --type 2 --load 3F00 --exec 3F00',
+        epilog='Examples:\n  toolshed.py cecbcopy HELLO.BIN BLANK.CAS,HELLO --type 2 --load 3F00 --exec 3F00',
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('src', help='Source binary file')
-    p.add_argument('dst', help='Destination: CAS.CAS,FILENAME:0')
+    p.add_argument('dst', help='Destination: CAS.CAS,FILENAME (no drive number)')
     p.add_argument('--type', type=int, choices=[0,1,2,3], default=2,
                    dest='file_type', help='File type: 0=BASIC, 1=data, 2=ML (default), 3=text')
     p.add_argument('--load', default='', dest='load_addr',
