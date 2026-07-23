@@ -71,9 +71,9 @@ const MakewavModule = require({js!r});
 const fs = require('fs');
 MakewavModule().then(m => {{
     m.FS.writeFile({vfs_src!r}, new Uint8Array([{src_arr}]));
-    const fn = m.cwrap({fn_name!r}, 'number', ['string', 'string']);
+    const fn = m.cwrap({fn_name!r}, 'number', ['string', 'string', 'string']);
     let rc;
-    try {{ rc = fn({vfs_src!r}, {vfs_dst!r}); }}
+    try {{ rc = fn({argstr!r}, {vfs_src!r}, {vfs_dst!r}); }}
     catch(e) {{ rc = e.name === 'ExitStatus' ? e.status : 2; }}
     try {{ fs.writeFileSync({out_path!r}, m.FS.readFile({vfs_dst!r})); }} catch(e) {{}}
     fs.writeFileSync({rc_path!r}, String(rc));
