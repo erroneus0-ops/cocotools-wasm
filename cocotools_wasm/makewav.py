@@ -121,6 +121,8 @@ if __name__ == '__main__':
                         help='Output CAS format instead of WAV')
     parser.add_argument('-s', dest='sample_rate', metavar='RATE',
                         help='Sample rate in Hz (default: 9600, match XRoar)')
+    parser.add_argument('-n', dest='name', metavar='NAME',
+                        help='Filename to encode in tape header (default: FILE)')
     parser.add_argument('-o', dest='output', metavar='FILE',
                         help='Output filename (default: file.wav or file.cas)')
     parser.add_argument('version', nargs='?', help=argparse.SUPPRESS)
