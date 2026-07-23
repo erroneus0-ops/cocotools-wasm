@@ -511,6 +511,116 @@ def os9_id(imagepath_with_comma):
     return _os9_op('ts_os9_id', imagepath_with_comma)
 
 
+# ── CECB Operations ──────────────────────────────────────────────────────────
+
+def cecb_bulkerase(caspath):
+    """Create/erase a CAS file (bulk erase = create blank cassette)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        vfs_cas = '/out.cas'
+        out_path = os.path.join(tmp, 'out.cas')
+        rc_path  = os.path.join(tmp, 'rc.txt')
+        js = _TOOLSHED_JS
+        runner = f"""
+const ToolshedModule = require({js!r});
+const fs = require('fs');
+ToolshedModule().then(m => {{
+    const fn = m.cwrap('ts_cecb_bulkerase', 'number', ['string']);
+    let rc;
+    try {{ rc = fn({vfs_cas!r}); }}
+    catch(e) {{ rc = e.name === 'ExitStatus' ? e.status : 2; }}
+    try {{ fs.writeFileSync({out_path!r}, m.FS.readFile({vfs_cas!r})); }} catch(e) {{}}
+    fs.writeFileSync({rc_path!r}, String(rc));
+    process.exit(0);
+}});
+"""
+        open(os.path.join(tmp, 'run.js'), 'w').write(runner)
+        subprocess.run(['node', os.path.join(tmp, 'run.js')], check=True, capture_output=True)
+        rc = int(open(rc_path).read().strip())
+        if rc == 0 and os.path.exists(out_path):
+            open(caspath, 'wb').write(open(out_path, 'rb').read())
+    return rc
+
+
+def cecb_copy(srcpath, dstpathlist, file_type=2, load_addr='', exec_addr=''):
+    """
+    Copy a binary file into a CAS image.
+
+    Args:
+        srcpath:     source binary file
+        dstpathlist: destination CAS pathlist (e.g. /disk.cas,HELLO:0)
+        file_type:   0=BASIC, 1=data, 2=ML (default), 3=text
+        load_addr:   load address as hex string (e.g. '3F00')
+        exec_addr:   exec address as hex string (e.g. '3F00')
+    """
+    src_data = open(srcpath, 'rb').read()
+    src_arr  = ','.join(str(b) for b in src_data)
+    comma = dstpathlist.index(',')
+    cas_path = dstpathlist[:comma]
+    cas_data = open(cas_path, 'rb').read() if os.path.exists(cas_path) else b''
+    cas_arr  = ','.join(str(b) for b in cas_data)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        vfs_cas  = '/out.cas'
+        vfs_src  = '/in.bin'
+        vfs_dst  = vfs_cas + dstpathlist[comma:]
+        out_path = os.path.join(tmp, 'out.cas')
+        rc_path  = os.path.join(tmp, 'rc.txt')
+        js = _TOOLSHED_JS
+        runner = f"""
+const ToolshedModule = require({js!r});
+const fs = require('fs');
+ToolshedModule().then(m => {{
+    m.FS.writeFile({vfs_cas!r}, new Uint8Array([{cas_arr}]));
+    m.FS.writeFile({vfs_src!r}, new Uint8Array([{src_arr}]));
+    const fn = m.cwrap('ts_cecb_copy', 'number',
+        ['string','string','number','string','string']);
+    let rc;
+    try {{ rc = fn({vfs_src!r}, {vfs_dst!r}, {int(file_type)},
+                  {load_addr!r}, {exec_addr!r}); }}
+    catch(e) {{ rc = e.name === 'ExitStatus' ? e.status : 2; }}
+    try {{ fs.writeFileSync({out_path!r}, m.FS.readFile({vfs_cas!r})); }} catch(e) {{}}
+    fs.writeFileSync({rc_path!r}, String(rc));
+    process.exit(0);
+}});
+"""
+        open(os.path.join(tmp, 'run.js'), 'w').write(runner)
+        subprocess.run(['node', os.path.join(tmp, 'run.js')], check=True, capture_output=True)
+        rc = int(open(rc_path).read().strip())
+        if rc == 0 and os.path.exists(out_path):
+            open(cas_path, 'wb').write(open(out_path, 'rb').read())
+    return rc
+
+
+def cecb_dir(caspath):
+    """List files on a CAS image. Returns text."""
+    cas_data = open(caspath, 'rb').read()
+    cas_arr  = ','.join(str(b) for b in cas_data)
+    with tempfile.TemporaryDirectory() as tmp:
+        vfs_cas = '/in.cas'
+        vfs_out = '/out.txt'
+        out_path = os.path.join(tmp, 'out.txt')
+        rc_path  = os.path.join(tmp, 'rc.txt')
+        js = _TOOLSHED_JS
+        runner = f"""
+const ToolshedModule = require({js!r});
+const fs = require('fs');
+ToolshedModule().then(m => {{
+    m.FS.writeFile({vfs_cas!r}, new Uint8Array([{cas_arr}]));
+    const fn = m.cwrap('ts_cecb_dir', 'number', ['string','string']);
+    let rc;
+    try {{ rc = fn({vfs_cas!r}, {vfs_out!r}); }}
+    catch(e) {{ rc = e.name === 'ExitStatus' ? e.status : 2; }}
+    try {{ fs.writeFileSync({out_path!r}, m.FS.readFile({vfs_out!r})); }} catch(e) {{}}
+    fs.writeFileSync({rc_path!r}, String(rc));
+    process.exit(0);
+}});
+"""
+        open(os.path.join(tmp, 'run.js'), 'w').write(runner)
+        subprocess.run(['node', os.path.join(tmp, 'run.js')], check=True, capture_output=True)
+        rc = int(open(rc_path).read().strip())
+        return open(out_path).read() if os.path.exists(out_path) else ''
+
+
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
@@ -598,6 +708,32 @@ Example:  BLANK.DSK,HELLO.BIN:0
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('pathlist', help='File to inspect: DISK.DSK,FILENAME.EXT:0')
 
+    p = sub.add_parser('cecbbulkerase',
+        help='Create blank CAS image (bulk erase)',
+        epilog='Example:\n  toolshed.py cecbbulkerase BLANK.CAS',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('cas', help='Output CAS file')
+
+    p = sub.add_parser('cecbcopy',
+        help='Copy binary into CAS image',
+        description='Copy a binary file into a CAS cassette image.\n\nPathlist format: CASSETTE.CAS,FILENAME:0',
+        epilog='Examples:\n  toolshed.py cecbcopy HELLO.BIN BLANK.CAS,HELLO:0 --type 2 --load 3F00 --exec 3F00',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('src', help='Source binary file')
+    p.add_argument('dst', help='Destination: CAS.CAS,FILENAME:0')
+    p.add_argument('--type', type=int, choices=[0,1,2,3], default=2,
+                   dest='file_type', help='File type: 0=BASIC, 1=data, 2=ML (default), 3=text')
+    p.add_argument('--load', default='', dest='load_addr',
+                   help='Load address as hex (e.g. 3F00)')
+    p.add_argument('--exec', default='', dest='exec_addr',
+                   help='Exec address as hex (e.g. 3F00)')
+
+    p = sub.add_parser('cecbdir',
+        help='List CAS image directory',
+        epilog='Example:\n  toolshed.py cecbdir BLANK.CAS',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('cas', help='CAS file')
+
     p = sub.add_parser('os9dir',
         help='List OS-9 image directory',
         description='List a directory inside an OS-9 disk image.',
@@ -672,6 +808,26 @@ Example:  BLANK.DSK,HELLO.BIN:0
             print(f"File type: {info.get('file_type')} ({types.get(int(info.get('file_type',0)),'?')})")
             print(f"Data type: {'ASCII' if int(info.get('data_type',0)) else 'Binary'}")
             print(f"File size: {info.get('file_size')} bytes")
+
+        elif args.cmd == 'cecbbulkerase':
+            rc = cecb_bulkerase(args.cas)
+            if rc == 0:
+                print(f"OK: {args.cas} created")
+            else:
+                print(f"ERROR: rc={rc}", file=sys.stderr)
+                sys.exit(1)
+
+        elif args.cmd == 'cecbcopy':
+            rc = cecb_copy(args.src, args.dst, args.file_type,
+                          args.load_addr, args.exec_addr)
+            if rc == 0:
+                print(f"OK: {args.src} -> {args.dst}")
+            else:
+                print(f"ERROR: rc={rc}", file=sys.stderr)
+                sys.exit(1)
+
+        elif args.cmd == 'cecbdir':
+            print(cecb_dir(args.cas), end='')
 
         elif args.cmd == 'os9dir':
             print(os9_dir(args.pathlist), end='')
