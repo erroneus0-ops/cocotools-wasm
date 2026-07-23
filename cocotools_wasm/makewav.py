@@ -22,16 +22,19 @@ _WASM_DIR   = os.path.join(_REPO_ROOT, 'wasm', 'makewav')
 _MAKEWAV_JS = os.path.join(_WASM_DIR, 'makewav.js')
 
 
-def convert(srcpath, dstpath, cas=False, raw=True, decb=False, sample_rate=None):
+def convert(srcpath, dstpath, cas=False, raw=True, decb=False,
+            sample_rate=None, name=None):
     """
     Convert a file to a cassette WAV or CAS file.
 
     Args:
-        srcpath: input file
-        dstpath: output WAV or CAS file
-        cas:     if True, output CAS format (-k flag)
-        raw:     if True, treat input as raw binary (-r flag)
-        decb:    if True, input has DECB header (-c flag)
+        srcpath:     input file
+        dstpath:     output WAV or CAS file
+        cas:         if True, output CAS format (-k flag)
+        raw:         if True, treat input as raw binary (-r flag)
+        decb:        if True, input has DECB header (-c flag)
+        sample_rate: sample rate in Hz (default: 9600)
+        name:        filename to encode in tape header
 
     Returns:
         0 on success
@@ -44,8 +47,16 @@ def convert(srcpath, dstpath, cas=False, raw=True, decb=False, sample_rate=None)
 
     src_data = open(srcpath, 'rb').read()
     src_arr  = ','.join(str(b) for b in src_data)
-    fn_name  = 'makewav_run_cas' if cas else 'makewav_run_raw'  # raw is default
-    # sample_rate passed via fn_name for now -- WASM has 9600 hardcoded
+    # Build args string for makewav_run_args
+    args = []
+    if raw:   args.append('-r')
+    if decb:  args.append('-c')
+    if cas:   args.append('-k')
+    args.append(f'-s{sample_rate or 9600}')
+    if name:  args.append(f'-n{name}')
+    argstr = ' '.join(args)
+    fn_name = 'makewav_run_args'
+    vfs_ext  = '.cas' if cas else '.wav' 
     vfs_ext  = '.cas' if cas else '.wav'
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -152,7 +163,7 @@ if __name__ == '__main__':
             base = os.path.splitext(args.input)[0]
             dst = base + ('.cas' if args.cas else '.wav')
 
-        rc = convert(args.input, dst, cas=args.cas, sample_rate=args.sample_rate)
+        rc = convert(args.input, dst, cas=args.cas, sample_rate=args.sample_rate, name=args.name)
         if rc == 0:
             size = os.path.getsize(dst)
             fmt = 'CAS' if args.cas else 'WAV'
