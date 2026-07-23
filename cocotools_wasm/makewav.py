@@ -22,7 +22,7 @@ _WASM_DIR   = os.path.join(_REPO_ROOT, 'wasm', 'makewav')
 _MAKEWAV_JS = os.path.join(_WASM_DIR, 'makewav.js')
 
 
-def convert(srcpath, dstpath, cas=False, raw=True, decb=False):
+def convert(srcpath, dstpath, cas=False, raw=True, decb=False, sample_rate=None):
     """
     Convert a file to a cassette WAV or CAS file.
 
@@ -45,6 +45,7 @@ def convert(srcpath, dstpath, cas=False, raw=True, decb=False):
     src_data = open(srcpath, 'rb').read()
     src_arr  = ','.join(str(b) for b in src_data)
     fn_name  = 'makewav_run_cas' if cas else 'makewav_run_raw'  # raw is default
+    # sample_rate passed via fn_name for now -- WASM has 9600 hardcoded
     vfs_ext  = '.cas' if cas else '.wav'
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -149,7 +150,7 @@ if __name__ == '__main__':
             base = os.path.splitext(args.input)[0]
             dst = base + ('.cas' if args.cas else '.wav')
 
-        rc = convert(args.input, dst, cas=args.cas)
+        rc = convert(args.input, dst, cas=args.cas, sample_rate=args.sample_rate)
         if rc == 0:
             size = os.path.getsize(dst)
             fmt = 'CAS' if args.cas else 'WAV'
