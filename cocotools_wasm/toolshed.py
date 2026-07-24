@@ -562,12 +562,29 @@ def cecb_copy(srcpath, dstpathlist, file_type=2, load_addr='', exec_addr=''):
     cas_data = open(cas_path, 'rb').read() if os.path.exists(cas_path) else b''
     cas_arr  = ','.join(str(b) for b in cas_data)
 
+    # Build the cecb command string for ts_cecb_run, matching the native
+    # cecb.exe CLI directly, e.g.: copy -2 -n -d0x3F00 -e0x3F00 /in.bin /out.cas,HELLO
+    #
+    # -n: no gap -- required to trigger DECB header stripping for ML files.
+    # Addresses are always given the 0x prefix explicitly (stripping any
+    # the caller may already have added first). The native cecbcopy parses
+    # addresses with strtol(..., 0), which treats a bare leading "0" as
+    # octal -- the old ts_cecb_copy skipped the 0x prefix whenever the
+    # address string started with '0' (e.g. "0400"), silently misreading
+    # hex addresses like $0400 as octal. Always prefixing avoids that.
+    flags = [f'-{int(file_type)}', '-n']
+    if load_addr:
+        flags.append('-d0x' + load_addr.lower().removeprefix('0x'))
+    if exec_addr:
+        flags.append('-e0x' + exec_addr.lower().removeprefix('0x'))
+
     with tempfile.TemporaryDirectory() as tmp:
         vfs_cas  = '/out.cas'
         vfs_src  = '/in.bin'
         vfs_dst  = vfs_cas + dstpathlist[comma:]
         out_path = os.path.join(tmp, 'out.cas')
         rc_path  = os.path.join(tmp, 'rc.txt')
+        cmdstr = 'copy ' + ' '.join(flags) + f' {vfs_src} {vfs_dst}'
         js = _TOOLSHED_JS
         runner = f"""
 const ToolshedModule = require({js!r});
@@ -575,11 +592,9 @@ const fs = require('fs');
 ToolshedModule().then(m => {{
     m.FS.writeFile({vfs_cas!r}, new Uint8Array([{cas_arr}]));
     m.FS.writeFile({vfs_src!r}, new Uint8Array([{src_arr}]));
-    const fn = m.cwrap('ts_cecb_copy', 'number',
-        ['string','string','number','string','string']);
+    const fn = m.cwrap('ts_cecb_run', 'number', ['string']);
     let rc;
-    try {{ rc = fn({vfs_src!r}, {vfs_dst!r}, {int(file_type)},
-                  {load_addr!r}, {exec_addr!r}); }}
+    try {{ rc = fn({cmdstr!r}); }}
     catch(e) {{ rc = e.name === 'ExitStatus' ? e.status : 2; }}
     try {{ fs.writeFileSync({out_path!r}, m.FS.readFile({vfs_cas!r})); }} catch(e) {{}}
     fs.writeFileSync({rc_path!r}, String(rc));
