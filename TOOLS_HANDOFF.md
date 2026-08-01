@@ -238,11 +238,27 @@ Checked against a zip Daniel pushed of his actual `AppData\Local\scripts`
 folder (the currently-in-use versions). Two things worth being precise
 about, since one is easy to mix up with the other:
 
-**`daniel-config.ps1` restores personal Windows preferences (HKCU
-settings, dark mode, etc.) -- it does NOT create scheduled tasks.**
-That's a different existing script: `setup_tasks.py` (already at the
-repo root) is the one that installs scripts and creates Windows
-Scheduled Tasks via XML.
+**`daniel-config.ps1`** solves a specific, real annoyance: Windows gives
+no simple, direct way to override Explorer's default display behavior,
+so this resets it systematically on a fresh install or upgrade. It does
+NOT create scheduled tasks -- that's a different existing script,
+`setup_tasks.py` (already at the repo root), which installs scripts and
+creates Windows Scheduled Tasks via XML.
+
+What it actually sets (all HKCU, no elevation needed):
+- Explorer file visibility: hidden files shown, file extensions shown,
+  protected OS files shown
+- Explorer default folder view: clears accumulated per-folder view
+  memory (the Bags/BagMRU registry keys) so the Details view default
+  actually takes effect uniformly, rather than fighting years of
+  per-folder overrides
+- Date/time format: `HH:mm:ss` (full time, seconds included), `HH:mm`
+  (short time), `ddMMMyyyy` (both short and long date) -- this is the
+  exact `HH:MM:SS` / `DDMMMYYYY` format documented as Daniel's stated
+  preference in CLAUDE_MANIFESTO.md's Claude Behavior Directives
+  section. Not just a stated preference -- enforced system-wide at the
+  registry level by this script, across the whole Windows environment.
+- Restarts Explorer at the end so all changes take effect immediately
 
 **`git_pull.py`** -- confirmed the repo's copy and the currently-running
 copy are the same script, differing only in machine-specific hardcoded
