@@ -38,7 +38,7 @@ jobs:
           cd wasm/lwasm
           bash build.sh
           # Write version file
-          LWTOOLS=$(find ../.. -maxdepth 1 -type d -name "lwtools-*" | sort -V | tail -1 | xargs basename)
+          LWTOOLS=$(find ../../emcc_workflow -maxdepth 1 -type d -name "lwtools-*" | sort -V | tail -1 | xargs basename)
           echo "source: $LWTOOLS" > VERSION
           echo "built: $(date -u '+%d%b%Y').upper()" >> VERSION
 
@@ -59,7 +59,7 @@ jobs:
           echo "# lwasm WASM Build Report" > wasm/lwasm/BUILD_REPORT.md
           echo "" >> wasm/lwasm/BUILD_REPORT.md
           echo "**Built:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> wasm/lwasm/BUILD_REPORT.md
-          echo "**lwtools:** $(ls -d lwtools-* | sort -V | tail -1)" >> wasm/lwasm/BUILD_REPORT.md
+          echo "**lwtools:** $(ls -d emcc_workflow/lwtools-* | sort -V | tail -1)" >> wasm/lwasm/BUILD_REPORT.md
           echo "**WASM size:** $(wc -c < wasm/lwasm/lwasm.wasm 2>/dev/null || echo 'build failed') bytes" >> wasm/lwasm/BUILD_REPORT.md
           echo "" >> wasm/lwasm/BUILD_REPORT.md
           echo "## Smoke Test Output" >> wasm/lwasm/BUILD_REPORT.md

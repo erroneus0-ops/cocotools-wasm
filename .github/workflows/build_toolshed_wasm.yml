@@ -36,7 +36,7 @@ jobs:
           cd wasm/toolshed
           bash build.sh
           # Write version file
-          TOOLSHED=$(find ../.. -maxdepth 1 -type d -name "toolshed-*" | sort -V | tail -1 | xargs basename)
+          TOOLSHED=$(find ../../emcc_workflow -maxdepth 1 -type d -name "toolshed-*" | sort -V | tail -1 | xargs basename)
           echo "source: $TOOLSHED" > VERSION
           echo "built: $(date -u '+%d%b%Y')" >> VERSION
 
@@ -55,7 +55,7 @@ jobs:
           echo "# toolshed WASM Build Report" > wasm/toolshed/BUILD_REPORT.md
           echo "" >> wasm/toolshed/BUILD_REPORT.md
           echo "**Built:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> wasm/toolshed/BUILD_REPORT.md
-          echo "**Toolshed:** $(ls -d toolshed-* | sort -V | tail -1)" >> wasm/toolshed/BUILD_REPORT.md
+          echo "**Toolshed:** $(ls -d emcc_workflow/toolshed-* | sort -V | tail -1)" >> wasm/toolshed/BUILD_REPORT.md
           echo "**WASM size:** $(wc -c < wasm/toolshed/toolshed.wasm 2>/dev/null || echo 'build failed') bytes" >> wasm/toolshed/BUILD_REPORT.md
           echo "" >> wasm/toolshed/BUILD_REPORT.md
           echo "## Smoke Test Output" >> wasm/toolshed/BUILD_REPORT.md
