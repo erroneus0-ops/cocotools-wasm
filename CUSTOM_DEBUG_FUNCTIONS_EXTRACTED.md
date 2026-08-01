@@ -102,6 +102,38 @@ uint16_t wasm_get_y(void);
 uint16_t wasm_get_s(void);
 ```
 
+## Coverage gap: 6309-specific registers
+
+Confirmed by checking `snapshot.c` directly: the snapshot format's
+`ID_HD6309_STATE` chunk (written/read only when the emulated CPU is
+actually in HD6309 mode) captures `HD6309_REG_E`, `HD6309_REG_F` (the
+E/F sub-registers making up the 6309's W register), `reg_v` (the V
+register), and `reg_md` (the mode register).
+
+**None of the 9 custom functions above cover any of this.** They were
+built for the standard 6809 register set only -- PC, CC, A, B, X, Y, S
+-- and notably don't even cover D, U, or DP from the base 6809 set,
+let alone anything 6309-specific.
+
+So the snapshot-based route (write a snapshot, parse its binary
+format) is heavier to use for any single value than a direct function
+call, but it's broader in coverage -- it already tracks 6309 state the
+custom functions never touch at all. The custom functions win on
+convenience; the snapshot format wins on completeness for 6309 mode.
+
+**Worth considering for a future rebase:** rather than just porting the
+existing 9 functions unchanged, this may be a natural point to extend
+the same design -- lightweight, direct, single-value accessor
+functions, one per register -- to also cover the 6309-specific state
+XRoar already tracks internally (`HD6309_REG_E`, `HD6309_REG_F`,
+`reg_v`, `reg_md`), plus the base-6809 registers the original 9 never
+included (D, U, DP). Same pattern as the existing functions --
+`part_component_by_id_is_a(..., "CPU", "HD6309")` instead of
+`"MC6809"`, guarded the same way snapshot.c guards its own 6309-only
+chunk (checking the CPU type before accessing 6309-specific fields).
+Not started -- a design option to weigh against just doing a
+straight, unchanged port when this work is picked back up.
+
 ## What's needed for a rebase onto current XRoar
 
 1. Add all 9 declarations to the current `src/wasm/wasm.h`.
