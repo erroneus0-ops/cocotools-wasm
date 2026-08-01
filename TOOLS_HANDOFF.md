@@ -232,6 +232,43 @@ README in `zip_backup_modules\README.md` documents module contract.
 
 ---
 
+## Scheduled-task infrastructure -- git_pull.py and related (2026-08-01)
+
+Checked against a zip Daniel pushed of his actual `AppData\Local\scripts`
+folder (the currently-in-use versions). Two things worth being precise
+about, since one is easy to mix up with the other:
+
+**`daniel-config.ps1` restores personal Windows preferences (HKCU
+settings, dark mode, etc.) -- it does NOT create scheduled tasks.**
+That's a different existing script: `setup_tasks.py` (already at the
+repo root) is the one that installs scripts and creates Windows
+Scheduled Tasks via XML.
+
+**`git_pull.py`** -- confirmed the repo's copy and the currently-running
+copy are the same script, differing only in machine-specific hardcoded
+paths (office: `C:\DATA\supercomm`, `C:\Program Files\Git\cmd\git.exe`;
+home: `D:\git\supercomm`, `D:\PortableGit\bin\git.exe`). Not a staleness
+issue, just two machines' configs -- whichever one is tracked in the
+repo is a placeholder/reference copy, not necessarily "the" version.
+
+**Two new files, previously untracked anywhere:**
+- `git_pull.bat` -- the actual Scheduled Task target. `cd`s to the repo,
+  runs `git.exe pull --no-rebase`, logs to a text file. This is the real
+  mechanism behind the "pulls three times daily" automation.
+- `zipbackup_rotation.bat` -- separate from `zip_backup.py` itself:
+  creates a plain timestamped `Compress-Archive` snapshot of the whole
+  `D:\git` folder (not the smart incremental logic `zip_backup.py`
+  handles), keeps the newest 20, deletes the rest.
+
+All three `.py`/`.py`-adjacent scripts in the zip (`git_pull.py`,
+`zip_backup.py`, `zip_backup_modules/git_bundle.py`) already have
+complete, clear self-documenting headers -- checked directly, nothing
+needed adding. The `zip_backup.py` module-system documentation above
+(July 3 2026) already matched the current in-use version exactly; no
+new information there, just confirmed accurate.
+
+---
+
 ## Disassembly Workflow: dis6x09.py + markup.py
 
 The disassembler is a multi-tool workflow, not a one-shot script.
