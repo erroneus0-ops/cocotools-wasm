@@ -17,7 +17,7 @@ updating means:
 1. **Download the new lwtools release** and extract it to
    `emcc_workflow/lwtools-X.Y.Z/` (matching the existing naming
    pattern the auto-detect glob looks for). Source:
-   `http://www.6809.org.uk/lwtools/`.
+   `https://www.lwtools.ca/releases/lwtools/`.
 2. **Trigger the workflow** -- `workflow_dispatch` from the Actions
    tab (takes a `version` input, cosmetic label only, defaults to
    `'4.24'` -- update that default when a new version becomes the norm)
