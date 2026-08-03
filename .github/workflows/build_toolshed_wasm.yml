@@ -9,6 +9,7 @@ on:
         default: '2.5.1'
   push:
     paths:
+      - 'emcc_workflow/toolshed-*/**'
       - 'wasm/toolshed/**'
       - '.github/workflows/build_toolshed_wasm.yml'
 

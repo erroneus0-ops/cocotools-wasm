@@ -11,6 +11,7 @@ on:
         default: '4.24'
   push:
     paths:
+      - 'emcc_workflow/lwtools-*/**'
       - 'wasm/lwasm/**'
       - '.github/workflows/build_lwasm_wasm.yml'
 
