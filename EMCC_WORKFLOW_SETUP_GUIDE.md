@@ -269,17 +269,36 @@ needing to dig through the Actions UI's log viewer at all.
 **Common failure categories actually hit in this project, roughly in
 order of how often they come up:**
 
-1. **Emscripten libc incompatibilities.** Some C library functions
-   don't have a clean Emscripten equivalent -- `digittoint()` (a BSD
-   extension), `_fileno` (a glibc-internal struct field), `ftruncate`
-   combined with `_fileno`, are the three real ones toolshed's build
-   hit. Symptom: an undefined-symbol error at the *link* stage, not a
-   compile error -- the individual `.c` files compile fine, but linking
-   the final `.js`/`.wasm` fails naming the missing symbol. Fix: exclude
-   the offending file from the source list (if the functionality isn't
-   needed for what you're exposing to WASM), or write a small stub
-   implementation (see `wasm/toolshed/native_stubs.c` for a real
-   example of this pattern). A reasonable first diagnostic pass before
+1. **Emscripten libc incompatibilities.** Some C library functions or
+   patterns don't have a clean Emscripten equivalent -- `digittoint()`
+   (a BSD extension) and `path->fd->_fileno` (a glibc-internal struct
+   field) are the two real ones toolshed's build hit. Symptom: an
+   undefined-symbol error at the *link* stage, not a compile error --
+   the individual `.c` files compile fine, but linking the final
+   `.js`/`.wasm` fails naming the missing symbol.
+
+   **First question to ask: can the missing thing be reimplemented
+   directly, with the same name?** This is strictly better than
+   excluding the file and stubbing its higher-level functions to an
+   error, when it's possible -- it restores the actual functionality
+   instead of quietly disabling it. It's possible when the missing
+   thing is a genuine, portable *function* with well-defined behavior
+   (`digittoint` is exactly this -- a trivial, one-line, fully portable
+   function, now reimplemented in `wasm/toolshed/native_stubs.c` with
+   the same name/signature, letting its calling file compile completely
+   unmodified rather than staying excluded).
+
+   It's *not* possible the same way when the issue is a struct field
+   access tied to a specific libc's internal layout (`_fileno` is
+   exactly this) -- you can't "provide a replacement" for a struct
+   field the way you can for a function. The real fix there is a small
+   source patch to the calling file itself (e.g. replace `fd->_fileno`
+   with the portable, standard `fileno(fd)` call), not a stub. If the
+   functionality genuinely isn't needed for what you're exposing to
+   WASM, excluding the file and stubbing its higher-level entry points
+   to an error (see the remaining stubs in
+   `wasm/toolshed/native_stubs.c`) is the reasonable fallback when a
+   real patch isn't worth the effort. A reasonable first diagnostic pass before
    even attempting a build: `grep -rl "_fileno\|ftruncate\|digittoint" yourproject-source/`
    to catch likely trouble spots early.
 

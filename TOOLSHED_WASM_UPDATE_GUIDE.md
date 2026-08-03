@@ -33,28 +33,54 @@ version string directly from the toolshed build system itself
 
 The real, recurring risk with a toolshed update isn't the WASM
 compilation process itself -- it's that toolshed's C source uses a few
-libc functions Emscripten's compiled environment doesn't support
-cleanly. The current build already had to exclude three files for
-exactly this reason (documented directly in `build.sh`'s own
-comments):
+libc functions/patterns Emscripten's compiled environment doesn't
+support cleanly. Really only **one genuine root cause** has come up so
+far, showing up in two files:
 
-- `libdecbsrec.c` -- uses `digittoint()`, a BSD extension not available
-- `libnativegs.c` -- uses `path->fd->_fileno`, a glibc-internal field
-- `libnativess.c` -- uses `ftruncate` combined with `_fileno`, same
-  glibc-internal issue
+- `libnativegs.c` and `libnativess.c` both access `path->fd->_fileno`
+  (`libnativess.c` via `ftruncate` combined with it) -- a glibc-internal
+  struct field, not something Emscripten's (musl-based) libc has in the
+  same layout at all. Both files are currently excluded from the build.
+
+(A second issue -- `libdecbsrec.c` using `digittoint()`, a BSD
+extension -- came up too, but is **fixed, not excluded**: as of
+2026-08-03, `native_stubs.c` provides a real `digittoint()`
+implementation, since it's a genuinely trivial, fully portable
+function. `libdecbsrec.c` now compiles completely unmodified and its
+S-record encode/decode actually works, rather than being permanently
+stubbed to an error. This is the model to follow for future issues,
+covered below.)
+
+**When a new toolshed release triggers a similar undefined-symbol
+error at link time, the first question to ask is: can the missing
+thing be reimplemented directly, with the same name?** This is
+strictly better than excluding the file and stubbing its higher-level
+functions to an error, when it's possible -- it restores the actual,
+real functionality instead of quietly disabling it. It's possible when
+the missing thing is a genuine, portable *function* with well-defined
+behavior (like `digittoint`) -- write it yourself in `native_stubs.c`
+with the same name and signature, and the calling file compiles
+unmodified.
+
+It's *not* possible the same way when the issue is a struct field
+access tied to a specific libc's internal layout (like `_fileno`) --
+you can't "provide a replacement" for a struct field the way you can
+for a function. The real fix there is a small source patch to the
+calling file itself: replace `fd->_fileno` with the portable, standard
+`fileno(fd)` function call, which Emscripten's libc does support
+correctly. Worth doing if the functionality is ever actually needed;
+not done here since native_gs/ss functions are never called in
+practice in this WASM build (all paths are virtual filesystem paths).
 
 **If a new toolshed release adds new files to these same libraries
 (libdecb, libnative), or the excluded files themselves change
 significantly, expect similar compatibility errors to resurface.** The
 build will simply fail to link with undefined-symbol errors naming the
-problem function. The existing exclusion list in `build.sh`
-(`! -name "libdecbsrec.c"` etc.) will need auditing -- a new file using
-one of these same patterns needs the same treatment: exclude it from
-the source list, and if the excluded functionality is actually needed
-by something the smoke test exercises, either find a portable
-replacement or stub it (see `native_stubs.c`, which already exists for
-exactly this purpose -- functions the wrapper needs but that don't
-port directly).
+problem function/field. For each one: check whether it's a genuine
+portable function (reimplement it in `native_stubs.c`, same name) or a
+libc-internal struct/field access (needs an actual source patch to the
+calling file, or exclusion if the functionality genuinely isn't
+needed).
 
 A reasonable first diagnostic step, matching how the exclusions were
 originally found: `grep -rl "_fileno\|ftruncate\|digittoint" toolshed-NEW/lib*/`
