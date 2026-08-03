@@ -284,7 +284,7 @@ order of how often they come up:**
    instead of quietly disabling it. It's possible when the missing
    thing is a genuine, portable *function* with well-defined behavior
    (`digittoint` is exactly this -- a trivial, one-line, fully portable
-   function, now reimplemented in `wasm/toolshed/native_stubs.c` with
+   function, now reimplemented in the shared `emcc_workflow/emscripten_libc_shims.c` with
    the same name/signature, letting its calling file compile completely
    unmodified rather than staying excluded).
 
@@ -297,7 +297,7 @@ order of how often they come up:**
    functionality genuinely isn't needed for what you're exposing to
    WASM, excluding the file and stubbing its higher-level entry points
    to an error (see the remaining stubs in
-   `wasm/toolshed/native_stubs.c`) is the reasonable fallback when a
+   project-specific stub file, e.g. `wasm/toolshed/native_stubs.c`) is the reasonable fallback when a
    real patch isn't worth the effort. A reasonable first diagnostic pass before
    even attempting a build: `grep -rl "_fileno\|ftruncate\|digittoint" yourproject-source/`
    to catch likely trouble spots early.

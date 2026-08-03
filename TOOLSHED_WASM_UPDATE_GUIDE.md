@@ -44,7 +44,7 @@ far, showing up in two files:
 
 (A second issue -- `libdecbsrec.c` using `digittoint()`, a BSD
 extension -- came up too, but is **fixed, not excluded**: as of
-2026-08-03, `native_stubs.c` provides a real `digittoint()`
+2026-08-03, `emcc_workflow/emscripten_libc_shims.c` (shared across projects) provides a real `digittoint()`
 implementation, since it's a genuinely trivial, fully portable
 function. `libdecbsrec.c` now compiles completely unmodified and its
 S-record encode/decode actually works, rather than being permanently
@@ -58,7 +58,7 @@ strictly better than excluding the file and stubbing its higher-level
 functions to an error, when it's possible -- it restores the actual,
 real functionality instead of quietly disabling it. It's possible when
 the missing thing is a genuine, portable *function* with well-defined
-behavior (like `digittoint`) -- write it yourself in `native_stubs.c`
+behavior (like `digittoint`) -- write it yourself in `emcc_workflow/emscripten_libc_shims.c` (shared, not project-specific)
 with the same name and signature, and the calling file compiles
 unmodified.
 
@@ -77,7 +77,7 @@ practice in this WASM build (all paths are virtual filesystem paths).
 significantly, expect similar compatibility errors to resurface.** The
 build will simply fail to link with undefined-symbol errors naming the
 problem function/field. For each one: check whether it's a genuine
-portable function (reimplement it in `native_stubs.c`, same name) or a
+portable function (reimplement it in the shared `emcc_workflow/emscripten_libc_shims.c`, same name) or a
 libc-internal struct/field access (needs an actual source patch to the
 calling file, or exclusion if the functionality genuinely isn't
 needed).
