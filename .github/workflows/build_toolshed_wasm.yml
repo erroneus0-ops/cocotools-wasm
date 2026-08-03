@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'toolshed version (e.g. 2.5.1)'
+        description: 'toolshed version (e.g. 2.6.0)'
         required: false
-        default: '2.5.1'
+        default: '2.6.0'
   push:
     paths:
       - 'emcc_workflow/toolshed-*/**'
