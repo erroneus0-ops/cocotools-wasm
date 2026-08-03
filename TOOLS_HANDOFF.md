@@ -399,3 +399,30 @@ asm6809 also warns on [,-S] as "illegal indirect indexed mode" --
 independently confirming W2000 diagnostic is correct.
 
 TFR 0,D in 6309 mode = $1F $C0 confirmed by both assemblers.
+
+## Future learning goal, not started -- understanding/extending the Python-to-WASM wiring (added 2026-08-03)
+
+Daniel's stated goal: learn how the Python wrappers actually get wired
+up to work from the command line, and eventually in the web UI and/or
+the web UI's own CLI too. Two-phase, in this order -- command line
+first, web UI integration once that's genuinely understood.
+
+**Not starting from zero -- `cocotools_wasm/cli.py` already exists and
+genuinely works**, with real subcommands (`assemble`, `makedsk`,
+`dskini`, `dskls`, `version`), calling into the actual compiled WASM
+builds of lwasm and toolshed. The learning path here is studying an
+already-working thing and understanding/extending the pattern, not
+building the wiring concept from scratch.
+
+**Natural, concrete first exercise, already flagged as open elsewhere
+in this file:** the wrapper-consistency gap -- `cocotools_wasm/lwasm.py`
+and `lwasm_wrapper.c` currently only expose a `format` parameter to
+callers, not lwasm's actual full flag surface (all the real
+command-line options lwasm itself supports). Understanding *why* that
+narrowing exists and *how* to widen it properly would directly serve
+the stated learning goal, while also closing a real, already-identified
+gap.
+
+Web UI / web UI's own CLI integration is explicitly the second phase,
+not attempted until the command-line piece is genuinely understood
+first. Not started, not scoped in detail yet.
