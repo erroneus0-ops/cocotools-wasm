@@ -2,14 +2,14 @@
 
 Written 2026-08-01, as part of consolidating all emcc-targeted source
 trees under `emcc_workflow/`. Unlike the toolshed guide, this isn't
-written just before removing a source tree -- `wasm/lwasm/` is actively
+written just before removing a source tree -- `wasm_builds/lwasm/` is actively
 maintained and the 4.24->4.25 upgrade has already been done once, as a
 deliberate exercise in validating the upgrade *process* itself, not
 just the destination version.
 
 ## The mechanism, already in place
 
-`wasm/lwasm/build.sh` auto-detects the highest-versioned `lwtools-*`
+`wasm_builds/lwasm/build.sh` auto-detects the highest-versioned `lwtools-*`
 directory under `emcc_workflow/` (`find .../emcc_workflow -maxdepth 1
 -type d -name "lwtools-*" | sort -V | tail -1`). In the common case,
 updating means:
@@ -21,8 +21,8 @@ updating means:
 2. **Trigger the workflow** -- `workflow_dispatch` from the Actions
    tab (takes a `version` input, cosmetic label only, defaults to
    `'4.24'` -- update that default when a new version becomes the norm)
-   or push a change touching `wasm/lwasm/**`.
-3. **Check the result**: `wasm/lwasm/BUILD_REPORT.md` gets rewritten
+   or push a change touching `wasm_builds/lwasm/**`.
+3. **Check the result**: `wasm_builds/lwasm/BUILD_REPORT.md` gets rewritten
    with the smoke test output. Look for `PASS -- lwasm WASM produces
    correct output`.
 

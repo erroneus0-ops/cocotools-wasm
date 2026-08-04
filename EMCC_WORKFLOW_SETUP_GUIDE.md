@@ -49,7 +49,7 @@ emcc_workflow/yourproject-X.Y.Z/
 Match whatever versioned-folder naming convention the existing ones use
 (`xroar-1.12.1`, `toolshed-2.5.1`) if there's any chance of needing this
 again for a future version -- it makes auto-detection possible later,
-the same way `wasm/lwasm/build.sh` and `wasm/toolshed/build.sh` already
+the same way `wasm_builds/lwasm/build.sh` and `wasm_builds/toolshed/build.sh` already
 auto-detect their own source folders by searching for a version-numbered
 directory name rather than a hardcoded one.
 
@@ -178,7 +178,7 @@ without needing those extra tools at all.
 
 Write a `build.sh` (or equivalent) that lives next to where you want
 the output, and calls `emcc` directly against an explicit file list --
-see `wasm/lwasm/build.sh` or `wasm/toolshed/build.sh` for real,
+see `wasm_builds/lwasm/build.sh` or `wasm_builds/toolshed/build.sh` for real,
 working examples. The workflow step is then just:
 
 ```yaml
@@ -297,7 +297,7 @@ order of how often they come up:**
    functionality genuinely isn't needed for what you're exposing to
    WASM, excluding the file and stubbing its higher-level entry points
    to an error (see the remaining stubs in
-   project-specific stub file, e.g. `wasm/toolshed/native_stubs.c`) is the reasonable fallback when a
+   project-specific stub file, e.g. `wasm_builds/toolshed/native_stubs.c`) is the reasonable fallback when a
    real patch isn't worth the effort. A reasonable first diagnostic pass before
    even attempting a build: `grep -rl "_fileno\|ftruncate\|digittoint" yourproject-source/`
    to catch likely trouble spots early.
@@ -323,8 +323,8 @@ order of how often they come up:**
    the race is a timing coincidence, not a code problem.
 
 5. **A source dependency that's simply missing**, if a `build.sh`
-   auto-detects its source folder (as `wasm/lwasm/build.sh` and
-   `wasm/toolshed/build.sh` both do) and that folder doesn't currently
+   auto-detects its source folder (as `wasm_builds/lwasm/build.sh` and
+   `wasm_builds/toolshed/build.sh` both do) and that folder doesn't currently
    exist under `emcc_workflow/` -- exactly what happened when both of
    those got triggered by an unrelated edit while their source trees
    were deliberately absent. Symptom: an immediate, early "ERROR: no

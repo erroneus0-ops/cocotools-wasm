@@ -2,13 +2,13 @@
 
 Extracted 2026-08-01, before removing `toolshed-2.5.1/` (the source
 tree used for the current, already-completed build). The compiled
-output (`wasm/toolshed/toolshed.js` / `.wasm`) stays and keeps working
+output (`wasm_builds/toolshed/toolshed.js` / `.wasm`) stays and keeps working
 regardless -- this guide exists so that if toolshed is ever updated,
 the actual process doesn't need to be reverse-engineered from scratch.
 
 ## The good news: most of this is already automated
 
-`wasm/toolshed/build.sh` and `.github/workflows/build_toolshed_wasm.yml`
+`wasm_builds/toolshed/build.sh` and `.github/workflows/build_toolshed_wasm.yml`
 were already written to be reasonably version-agnostic -- they
 auto-detect whichever `toolshed-*` directory exists at the repo root
 (`find ... -name "toolshed-*" | sort -V | tail -1`) and extract the
@@ -20,11 +20,11 @@ version string directly from the toolshed build system itself
    this is what the auto-detect glob looks for). Toolshed is part of
    the NitrOS-9 project; check there for the current release location.
 2. **Trigger the workflow** -- either push a change touching
-   `wasm/toolshed/**` or the workflow file itself, or use
+   `wasm_builds/toolshed/**` or the workflow file itself, or use
    `workflow_dispatch` from the Actions tab (it takes a `version` input
    for the build report label, defaulting to `2.5.1` -- update that
    default if you want, though it's cosmetic, not functional).
-3. **Check the result**: `wasm/toolshed/BUILD_REPORT.md` gets rewritten
+3. **Check the result**: `wasm_builds/toolshed/BUILD_REPORT.md` gets rewritten
    with the new build's smoke test output. Look for `PASS -- toolshed
    WASM DECB and CECB paths both working` at the end. If it says FAIL
    or the smoke test didn't run at all, something broke -- see below.
@@ -109,8 +109,8 @@ list, following the same pattern as the existing ones.
 
 ## Verification
 
-`wasm/toolshed/smoke_test.js` is the actual pass/fail gate, run
-automatically by the workflow via `node wasm/toolshed/smoke_test.js`.
+`wasm_builds/toolshed/smoke_test.js` is the actual pass/fail gate, run
+automatically by the workflow via `node wasm_builds/toolshed/smoke_test.js`.
 It creates a blank 35-track DSK image, writes a minimal hand-assembled
 DECB binary (`LDA #$42, RTS`) into the virtual filesystem, copies it
 onto the disk image, and lists the directory -- exercising the DECB
