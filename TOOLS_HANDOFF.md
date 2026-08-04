@@ -425,4 +425,30 @@ gap.
 
 Web UI / web UI's own CLI integration is explicitly the second phase,
 not attempted until the command-line piece is genuinely understood
-first. Not started, not scoped in detail yet.
+first.
+
+**The web UI phase has a genuinely concrete shape now (2026-08-04), not
+just "eventually integrate with the web UI":** a separate, dedicated
+WASM-based CLI environment -- tools invoked by their actual original
+names (`lwasm`, `toolshed`, etc.) with natural command-line arguments,
+plus some real mechanism for importing and exporting files/data in and
+out of the browser environment. Deliberately its own thing, not
+attempted as an add-on to the xroar/emulator page -- the xroar
+environment (browser page + keyboard + monitor bezel) and this cocotools
+CLI environment are two genuinely separate projects, each maturing
+independently.
+
+**The eventual merge is the actual long-term goal, though, not a
+rejected idea** -- once both sides are mature enough on their own terms,
+they merge into one experience: an emulator page that can also be used
+as a real CoCo development environment, not just a machine to look at.
+Not started, not scoped in detail yet -- deliberately deferred until
+both halves exist independently first, since forcing the merge early
+would just complicate both before either one is solid.
+
+Repo-split context: this work belongs to `cocotools-wasm` specifically
+(the CLI environment, `cocotools_wasm/cli.py`, the wrapper-consistency
+exercise above), not `WebUI-debug-dev` (the xroar/emulator side) -- the
+eventual merge is exactly the kind of thing that makes clean separation
+between the two repos worth having gotten right now, rather than
+something to worry about resolving later.
