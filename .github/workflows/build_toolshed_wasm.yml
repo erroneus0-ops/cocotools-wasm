@@ -10,7 +10,7 @@ on:
   push:
     paths:
       - 'emcc_workflow/toolshed-*/**'
-      - 'wasm/toolshed/**'
+      - 'wasm_builds/toolshed/**'
       - '.github/workflows/build_toolshed_wasm.yml'
 
 permissions:
@@ -34,7 +34,7 @@ jobs:
 
       - name: Build toolshed WASM
         run: |
-          cd wasm/toolshed
+          cd wasm_builds/toolshed
           bash build.sh
           # Write version file
           TOOLSHED=$(find ../../emcc_workflow -maxdepth 1 -type d -name "toolshed-*" | sort -V | tail -1 | xargs basename)
@@ -43,32 +43,32 @@ jobs:
 
       - name: Verify output
         run: |
-          test -s wasm/toolshed/toolshed.wasm && echo "toolshed.wasm OK"
-          test -s wasm/toolshed/toolshed.js   && echo "toolshed.js OK"
+          test -s wasm_builds/toolshed/toolshed.wasm && echo "toolshed.wasm OK"
+          test -s wasm_builds/toolshed/toolshed.js   && echo "toolshed.js OK"
 
       - name: Run smoke test
         run: |
-          node wasm/toolshed/smoke_test.js 2>&1 | tee /tmp/smoke_output.txt
+          node wasm_builds/toolshed/smoke_test.js 2>&1 | tee /tmp/smoke_output.txt
 
       - name: Write build report
         if: always()
         run: |
-          echo "# toolshed WASM Build Report" > wasm/toolshed/BUILD_REPORT.md
-          echo "" >> wasm/toolshed/BUILD_REPORT.md
-          echo "**Built:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> wasm/toolshed/BUILD_REPORT.md
-          echo "**Toolshed:** $(ls -d emcc_workflow/toolshed-* | sort -V | tail -1)" >> wasm/toolshed/BUILD_REPORT.md
-          echo "**WASM size:** $(wc -c < wasm/toolshed/toolshed.wasm 2>/dev/null || echo 'build failed') bytes" >> wasm/toolshed/BUILD_REPORT.md
-          echo "" >> wasm/toolshed/BUILD_REPORT.md
-          echo "## Smoke Test Output" >> wasm/toolshed/BUILD_REPORT.md
-          echo '```' >> wasm/toolshed/BUILD_REPORT.md
-          cat /tmp/smoke_output.txt >> wasm/toolshed/BUILD_REPORT.md 2>/dev/null || echo "smoke test did not run" >> wasm/toolshed/BUILD_REPORT.md
-          echo '```' >> wasm/toolshed/BUILD_REPORT.md
+          echo "# toolshed WASM Build Report" > wasm_builds/toolshed/BUILD_REPORT.md
+          echo "" >> wasm_builds/toolshed/BUILD_REPORT.md
+          echo "**Built:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> wasm_builds/toolshed/BUILD_REPORT.md
+          echo "**Toolshed:** $(ls -d emcc_workflow/toolshed-* | sort -V | tail -1)" >> wasm_builds/toolshed/BUILD_REPORT.md
+          echo "**WASM size:** $(wc -c < wasm_builds/toolshed/toolshed.wasm 2>/dev/null || echo 'build failed') bytes" >> wasm_builds/toolshed/BUILD_REPORT.md
+          echo "" >> wasm_builds/toolshed/BUILD_REPORT.md
+          echo "## Smoke Test Output" >> wasm_builds/toolshed/BUILD_REPORT.md
+          echo '```' >> wasm_builds/toolshed/BUILD_REPORT.md
+          cat /tmp/smoke_output.txt >> wasm_builds/toolshed/BUILD_REPORT.md 2>/dev/null || echo "smoke test did not run" >> wasm_builds/toolshed/BUILD_REPORT.md
+          echo '```' >> wasm_builds/toolshed/BUILD_REPORT.md
 
       - name: Commit WASM output
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add wasm/toolshed/toolshed.js wasm/toolshed/toolshed.wasm wasm/toolshed/BUILD_REPORT.md
+          git add wasm_builds/toolshed/toolshed.js wasm_builds/toolshed/toolshed.wasm wasm_builds/toolshed/BUILD_REPORT.md
           git diff --staged --quiet || git commit -m "build: toolshed ${{ github.event.inputs.version || '2.6.0' }} WASM [ci skip]"
           git pull --rebase origin main
           git push

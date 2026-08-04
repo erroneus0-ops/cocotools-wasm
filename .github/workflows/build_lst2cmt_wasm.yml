@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'wasm/lst2cmt/**'
+      - 'wasm_builds/lst2cmt/**'
 
 permissions:
   contents: write
@@ -19,19 +19,19 @@ jobs:
           version: latest
       - name: Build
         run: |
-          cd wasm/lst2cmt
+          cd wasm_builds/lst2cmt
           bash build.sh
       - name: Write build report
         if: always()
         run: |
-          echo "# lst2cmt WASM Build Report" > wasm/lst2cmt/BUILD_REPORT.md
-          echo "**Built:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> wasm/lst2cmt/BUILD_REPORT.md
-          echo "**Size:** $(wc -c < wasm/lst2cmt/lst2cmt.wasm 2>/dev/null || echo 'build failed') bytes" >> wasm/lst2cmt/BUILD_REPORT.md
+          echo "# lst2cmt WASM Build Report" > wasm_builds/lst2cmt/BUILD_REPORT.md
+          echo "**Built:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> wasm_builds/lst2cmt/BUILD_REPORT.md
+          echo "**Size:** $(wc -c < wasm_builds/lst2cmt/lst2cmt.wasm 2>/dev/null || echo 'build failed') bytes" >> wasm_builds/lst2cmt/BUILD_REPORT.md
       - name: Commit
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add wasm/lst2cmt/
+          git add wasm_builds/lst2cmt/
           git diff --staged --quiet || git commit -m "build: lst2cmt WASM [ci skip]"
           git pull --rebase origin main
           git push
