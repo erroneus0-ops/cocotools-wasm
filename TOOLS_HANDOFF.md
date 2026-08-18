@@ -15,10 +15,48 @@ project-specific content into its own dedicated handoff, separate from
 the manifesto's general, project-agnostic behavior/style guidance and
 the Book and Environment handoffs.
 
+**Correction (2026-08-18) -- read this before touching validation methodology:**
+asm6809 comparison is retired as a validation approach entirely, not just
+demoted -- do not reintroduce it, and do not treat the July 16 2026 entry
+further below as evidence of anything beyond what it actually shows (see
+that entry for the specifics). asm6809 is a separate, independently-written
+assembler (William Astle's lwasm vs. Ciaran Anscomb's asm6809 are different
+projects, different authors, different codebases). Two independent
+assemblers agreeing on one test file is not the same claim as "this
+correctly replicates lwasm" -- it's a different, weaker claim that happened
+to get written up with more confidence than it earned. This file's own
+stated verification strategy (a few sections below) already specifies the
+correct approach and was apparently never actually carried out and
+documented with the same rigor as the asm6809 comparison was.
+
+**The actual requirement, going forward:** the real lwasm binary (built
+natively for Windows, Linux, or Mac from `emcc_workflow/lwtools-4.24/`)
+is the sole authoritative baseline. Given identical input, the
+python-wrapped `lwasm.wasm` path must produce identical output --
+same stdout, same exit code, same bytes in any file the operation
+touches. Not "close," not "agrees with a different assembler on the
+cases tested" -- identical, checked directly against the real native
+binary, not a proxy for it. If WASM/Emscripten's environment genuinely
+requires different invocation mechanics (virtual filesystem paths, a
+different means of reading argv, etc.), that's acceptable -- document
+the specific accommodation plainly where it lives in code, and move on.
+The input and output contract to the user is what must never drift,
+not the internal plumbing that produces it.
+
+This same requirement applies directly to the planned virtual
+terminal/CLI feature (see the Python-to-WASM wiring section below): a
+command typed there should look like an ordinary native command line,
+but the actual guarantee underneath has to be that it's genuinely
+calling the compiled `.wasm` and getting native-equivalent behavior
+back -- not merely producing plausible-looking output.
+
 Real, concrete status milestone as of the most recent entry here:
 confirmed July 16 2026, `cocotools`' assembler produces byte-for-byte
 identical output to Ciaran's own `asm6809` (2.12) on a 6309-mode test
-file -- genuine cross-validation, not just "seems to work."
+file. Retained here as a historical record of what was actually
+checked, not as a stand-in for the still-outstanding direct comparison
+against real lwasm described above -- see the correction note
+immediately above this entry.
 
 Still open: the wrapper-consistency work flagged in earlier sessions
 (widening `lwasm_wrapper.c` / `cocotools_wasm/lwasm.py` to accept a
@@ -390,7 +428,15 @@ of saving the return address, corrupting the stack frame.
 
 ---
 
-## cocotools Validation Against asm6809
+## cocotools vs. asm6809 -- historical note, retired as a validation method (2026-08-18)
+
+See the correction note at the top of this file for the full reasoning.
+Short version: this was a comparison against a different, independently-
+written assembler (Ciaran's asm6809), not against the actual lwasm C
+source cocotools is meant to replicate. It's kept here only as a factual
+record of what was actually run and found -- not as evidence that
+cocotools correctly replicates lwasm, and not to be cited as such or
+extended with further asm6809 comparisons going forward.
 
 July 16 2026 -- cocotools and Ciaran's asm6809 2.12 produced byte-for-byte
 identical output assembling print_retaddr.asm with 6309 mode enabled.
@@ -399,6 +445,16 @@ asm6809 also warns on [,-S] as "illegal indirect indexed mode" --
 independently confirming W2000 diagnostic is correct.
 
 TFR 0,D in 6309 mode = $1F $C0 confirmed by both assemblers.
+
+**Outstanding, real work this doesn't substitute for:** the actual
+lwasm-vs-cocotools byte-for-byte comparison this file's own verification
+strategy already calls for (see "Verification Strategy" above) --
+build real lwasm natively (source at `emcc_workflow/lwtools-4.24/`),
+run it against the same test files cocotools has been validated
+against here, and document the result with the same rigor this asm6809
+entry got. Until that exists, cocotools' correctness relative to the
+thing it's actually supposed to replicate remains genuinely unverified,
+not just "verified against a second-best proxy."
 
 ## Future learning goal, not started -- understanding/extending the Python-to-WASM wiring (added 2026-08-03)
 
