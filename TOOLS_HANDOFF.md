@@ -508,3 +508,69 @@ exercise above), not `WebUI-debug-dev` (the xroar/emulator side) -- the
 eventual merge is exactly the kind of thing that makes clean separation
 between the two repos worth having gotten right now, rather than
 something to worry about resolving later.
+
+---
+
+## Documentation audit findings (2026-08-18) -- real, found via cross-repo review
+
+A WebUI-debug-dev session with no ongoing stake in this repo did a
+pass over every top-level `.md` file here, specifically checking
+factual claims against the actual current state of the repo rather
+than trusting what each file asserted about itself. Three real,
+concrete things came out of it, none fixed yet:
+
+**1. `LWASM_WASM_UPDATE_GUIDE.md`'s "Status" section is stale.** It
+claims `emcc_workflow/lwtools-4.24/` and `lwtools-4.25/` are "both
+currently absent from the repo." Directly checked (2026-08-18):
+`emcc_workflow/lwtools-4.24/lwasm/lwasm.c` genuinely exists right now.
+This matters specifically because the correction above (asm6809
+retirement) tells whoever picks up the real-lwasm-comparison work to
+go build native lwasm from exactly that path -- a reader trusting this
+guide's own status note first could wrongly think they need to
+re-download the source before that work can even start. Fix: update
+the status section to reflect current reality, or better, make status
+claims like this check themselves against the filesystem rather than
+being hand-maintained prose that silently goes stale (this project
+does add/remove these source trees deliberately and repeatedly as
+routine practice -- see Troubleshooting item 5 in
+`EMCC_WORKFLOW_SETUP_GUIDE.md` -- so this kind of staleness is a
+structural, recurring risk here, not a one-off mistake).
+
+**2. `EMCC_WORKFLOW_SETUP_GUIDE.md`'s own template example uses the
+wrong path convention.** Its "Step 4: verify and commit the output"
+code block uses `wasm/yourproject/yourproject.wasm` four times, while
+five other references throughout the same document correctly use
+`wasm_builds/lwasm/`, `wasm_builds/toolshed/`. This is the same
+`wasm/` vs `wasm_builds/` confusion already found once tonight
+elsewhere (`cocotools_wasm/toolshed.py`'s `_WASM_DIR` pointing at a
+`wasm/toolshed/` path that doesn't exist, confirmed directly -- the
+real build lives at `wasm_builds/toolshed/`). This instance is more
+consequential than that one, though: this file is the *template* for
+setting up any future project's WASM workflow, so the wrong path
+pattern is positioned to get copy-pasted directly into new work rather
+than just being one existing wrapper's bug. Fix: correct the four
+`wasm/yourproject` references in the Step 4 block to
+`wasm_builds/yourproject`, matching the rest of the document.
+
+**3. `toolshed-DiskShed-v0.9.0/` (the source tree actually present and
+examined tonight) is not the same version that produced the live,
+committed `toolshed.wasm`.** Confirmed via `doc/changelog.md`: this
+tree is toolshed **v2.6.0** (2026-07-29), which introduced the DiskShed
+GUI application (wxWidgets, `gui/wx/src/main.cpp`) alongside the
+existing CLI suite -- explaining the otherwise-confusing directory
+name (DiskShed is a bundled *addition* in this release, not a fork or
+rename of toolshed itself). But per `TOOLSHED_WASM_UPDATE_GUIDE.md`,
+the actual live build came from **toolshed-2.5.1**, now genuinely,
+correctly removed (verified absent). Practical effect: conclusions
+drawn from examining `toolshed-DiskShed-v0.9.0/decb/` (e.g. confirming
+`decblist.c` exists as a native subcommand of `decb`, relevant to the
+still-missing `list`/detokenize wrapper gap noted elsewhere) are very
+likely still architecturally accurate for 2.5.1 too -- `decb`'s core
+structure is unlikely to have changed just because an unrelated GUI
+tool got bundled into the same release -- but this has not been
+verified byte-for-byte against the actual 2.5.1 source, which no
+longer exists in this repo to diff against. The 2.6.0 changelog also
+lists genuinely new capabilities 2.5.1 doesn't have at all (`decb
+binbust`, `os9 reveal`, `cecb dumpblock`) -- worth knowing about as
+candidates if/when a real toolshed version upgrade happens, distinct
+from the already-flagged `list` gap which exists in both versions.
