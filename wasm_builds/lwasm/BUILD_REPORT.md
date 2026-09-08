@@ -1,8 +1,8 @@
 # lwasm WASM Build Report
 
-**Built:** 2026-09-08 02:22 UTC
-**lwtools:** emcc_workflow/lwtools-4.24
-**WASM size:** 166599 bytes
+**Built:** 2026-09-08 12:06 UTC
+**lwtools:** emcc_workflow/lwtools-4.25
+**WASM size:** 171192 bytes
 
 ## Smoke Test Output
 ```
