@@ -1,3 +1,3 @@
 # tocgen WASM Build Report
-**Built:** 2026-08-04 21:57 UTC
-**Size:** 52270 bytes
+**Built:** 2026-09-08 02:24 UTC
+**Size:** 52420 bytes
