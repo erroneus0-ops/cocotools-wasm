@@ -1,8 +1,8 @@
 # toolshed WASM Build Report
 
-**Built:** 2026-09-08 02:08 UTC
-**Toolshed:** emcc_workflow/toolshed-DiskShed-v0.9.0
-**WASM size:** 107209 bytes
+**Built:** 2026-09-08 02:22 UTC
+**Toolshed:** emcc_workflow/toolshed-2.6.1
+**WASM size:** 107343 bytes
 
 ## Smoke Test Output
 ```
@@ -20,11 +20,7 @@
     HELLO,BIN,2,0,34,13
    DECB PASS -- dskini + copy + dir all working
 5. cecb bulkerase...
-Creating WAV file: /test.cas
-      Sample Rate: 22050
-  Bits Per Sample: 16
-   Silence Length: 0.500000
-
+Skipping /test.cas, not WAV file.
    rc: 0 OK
 6. cecb copy (ts_cecb_run)...
    rc: 0 OK
