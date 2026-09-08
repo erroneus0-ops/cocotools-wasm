@@ -19,6 +19,7 @@ jobs:
           version: latest
       - name: Build
         run: |
+          set -o pipefail
           cd wasm_builds/ar2
           bash build.sh 2>&1 | tee /tmp/ar2_build_output.log
         continue-on-error: true
