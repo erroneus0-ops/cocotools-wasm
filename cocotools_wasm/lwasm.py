@@ -24,7 +24,7 @@ from urllib.parse import unquote
 
 # Path to the WASM module relative to this file
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_WASM_DIR  = os.path.join(_REPO_ROOT, 'wasm', 'lwasm')
+_WASM_DIR  = os.path.join(_REPO_ROOT, 'wasm_builds', 'lwasm')
 _LWASM_JS  = os.path.join(_WASM_DIR, 'lwasm.js')
 
 # Node.js runner -- calls lwasm_assemble and writes output files

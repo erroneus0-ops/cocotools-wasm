@@ -16,7 +16,7 @@ import sys
 import tempfile
 
 _REPO_ROOT  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_WASM_DIR   = os.path.join(_REPO_ROOT, 'wasm', 'tocgen')
+_WASM_DIR   = os.path.join(_REPO_ROOT, 'wasm_builds', 'tocgen')
 _TOCGEN_JS  = os.path.join(_WASM_DIR, 'tocgen.js')
 
 

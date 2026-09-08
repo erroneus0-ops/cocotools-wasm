@@ -15,7 +15,7 @@ echo "  toolshed: $TOOLSHED ($TS_VERSION)"
 
 LIBMISC_SRCS=$(find "$LIBMISC" -name "*.c" ! -name "os9diskfuncs.c" | tr '\n' ' ')
 # sys_dir.h has compatibility issues -- ar2/o2u.c includes it but we exclude o2u.c
-AR2_SRCS="$AR2/ar.c $AR2/arsup.c $AR2/lz1.c $TOOLSHED/c3/lib/lib.a/patmatch.c"
+AR2_SRCS="$AR2/ar.c $AR2/arsup.c $AR2/lz1.c $(pwd)/patmatch_real.c"
 
 emcc \
     ar2_wrapper.c \
