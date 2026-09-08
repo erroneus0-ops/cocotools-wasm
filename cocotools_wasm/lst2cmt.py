@@ -19,7 +19,7 @@ import sys
 import tempfile
 
 _REPO_ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_WASM_DIR    = os.path.join(_REPO_ROOT, 'wasm', 'lst2cmt')
+_WASM_DIR    = os.path.join(_REPO_ROOT, 'wasm_builds', 'lst2cmt')
 _LST2CMT_JS  = os.path.join(_WASM_DIR, 'lst2cmt.js')
 
 _RUNNER = """\

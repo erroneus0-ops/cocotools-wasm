@@ -35,15 +35,19 @@ jobs:
         run: emcc --version
 
       - name: Build lwasm WASM
+        continue-on-error: true
+        id: build_step
         run: |
+          set -o pipefail
           cd wasm_builds/lwasm
-          bash build.sh
+          bash build.sh 2>&1 | tee /tmp/lwasm_build_output.txt
           # Write version file
           LWTOOLS=$(find ../../emcc_workflow -maxdepth 1 -type d -name "lwtools-*" | sort -V | tail -1 | xargs basename)
           echo "source: $LWTOOLS" > VERSION
-          echo "built: $(date -u '+%d%b%Y').upper()" >> VERSION
+          echo "built: $(date -u '+%d%b%Y')" >> VERSION
 
       - name: Verify output
+        if: steps.build_step.outcome == 'success'
         run: |
           ls -la wasm_builds/lwasm/lwasm.js wasm_builds/lwasm/lwasm.wasm
           # Basic sanity check -- file should be non-empty
@@ -51,7 +55,9 @@ jobs:
           test -s wasm_builds/lwasm/lwasm.js   && echo "lwasm.js OK"
 
       - name: Run smoke test
+        if: steps.build_step.outcome == 'success'
         run: |
+          set -o pipefail
           node wasm_builds/lwasm/smoke_test.js 2>&1 | tee /tmp/smoke_output.txt
 
       - name: Write build report
@@ -63,16 +69,28 @@ jobs:
           echo "**lwtools:** $(ls -d emcc_workflow/lwtools-* | sort -V | tail -1)" >> wasm_builds/lwasm/BUILD_REPORT.md
           echo "**WASM size:** $(wc -c < wasm_builds/lwasm/lwasm.wasm 2>/dev/null || echo 'build failed') bytes" >> wasm_builds/lwasm/BUILD_REPORT.md
           echo "" >> wasm_builds/lwasm/BUILD_REPORT.md
-          echo "## Smoke Test Output" >> wasm_builds/lwasm/BUILD_REPORT.md
-          echo '```' >> wasm_builds/lwasm/BUILD_REPORT.md
-          cat /tmp/smoke_output.txt >> wasm_builds/lwasm/BUILD_REPORT.md 2>/dev/null || echo "smoke test did not run" >> wasm_builds/lwasm/BUILD_REPORT.md
-          echo '```' >> wasm_builds/lwasm/BUILD_REPORT.md
+          if [ "${{ steps.build_step.outcome }}" != "success" ]; then
+            echo "## Build FAILED -- full output below" >> wasm_builds/lwasm/BUILD_REPORT.md
+            echo '```' >> wasm_builds/lwasm/BUILD_REPORT.md
+            cat /tmp/lwasm_build_output.txt >> wasm_builds/lwasm/BUILD_REPORT.md 2>/dev/null || echo "no build output captured" >> wasm_builds/lwasm/BUILD_REPORT.md
+            echo '```' >> wasm_builds/lwasm/BUILD_REPORT.md
+          else
+            echo "## Smoke Test Output" >> wasm_builds/lwasm/BUILD_REPORT.md
+            echo '```' >> wasm_builds/lwasm/BUILD_REPORT.md
+            cat /tmp/smoke_output.txt >> wasm_builds/lwasm/BUILD_REPORT.md 2>/dev/null || echo "smoke test did not run" >> wasm_builds/lwasm/BUILD_REPORT.md
+            echo '```' >> wasm_builds/lwasm/BUILD_REPORT.md
+          fi
 
       - name: Commit WASM output
+        if: always()
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add wasm_builds/lwasm/lwasm.js wasm_builds/lwasm/lwasm.wasm wasm_builds/lwasm/BUILD_REPORT.md
+          git add wasm_builds/lwasm/lwasm.js wasm_builds/lwasm/lwasm.wasm wasm_builds/lwasm/BUILD_REPORT.md wasm_builds/lwasm/VERSION
           git diff --staged --quiet || git commit -m "build: lwasm ${{ github.event.inputs.version || '4.24' }} WASM [ci skip]"
           git pull --rebase origin main
           git push
+
+      - name: Fail the job if the build actually failed
+        if: steps.build_step.outcome != 'success'
+        run: exit 1

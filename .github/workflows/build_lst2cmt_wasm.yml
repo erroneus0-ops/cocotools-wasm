@@ -18,16 +18,27 @@ jobs:
         with:
           version: latest
       - name: Build
+        continue-on-error: true
+        id: build_step
         run: |
+          set -o pipefail
           cd wasm_builds/lst2cmt
-          bash build.sh
+          bash build.sh 2>&1 | tee /tmp/lst2cmt_build_output.txt
       - name: Write build report
         if: always()
         run: |
           echo "# lst2cmt WASM Build Report" > wasm_builds/lst2cmt/BUILD_REPORT.md
           echo "**Built:** $(date -u '+%Y-%m-%d %H:%M UTC')" >> wasm_builds/lst2cmt/BUILD_REPORT.md
           echo "**Size:** $(wc -c < wasm_builds/lst2cmt/lst2cmt.wasm 2>/dev/null || echo 'build failed') bytes" >> wasm_builds/lst2cmt/BUILD_REPORT.md
+          if [ "${{ steps.build_step.outcome }}" != "success" ]; then
+            echo "" >> wasm_builds/lst2cmt/BUILD_REPORT.md
+            echo "## Build FAILED -- full output below" >> wasm_builds/lst2cmt/BUILD_REPORT.md
+            echo '```' >> wasm_builds/lst2cmt/BUILD_REPORT.md
+            cat /tmp/lst2cmt_build_output.txt >> wasm_builds/lst2cmt/BUILD_REPORT.md 2>/dev/null || echo "no build output captured" >> wasm_builds/lst2cmt/BUILD_REPORT.md
+            echo '```' >> wasm_builds/lst2cmt/BUILD_REPORT.md
+          fi
       - name: Commit
+        if: always()
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
@@ -35,3 +46,6 @@ jobs:
           git diff --staged --quiet || git commit -m "build: lst2cmt WASM [ci skip]"
           git pull --rebase origin main
           git push
+      - name: Fail the job if the build actually failed
+        if: steps.build_step.outcome != 'success'
+        run: exit 1
